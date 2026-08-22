@@ -3,3 +3,5 @@ pandas
 openpyxl
 xlsxwriter
 python-dateutil
+hijri-converter
+reportlab
