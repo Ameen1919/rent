@@ -18,37 +18,8 @@ from reportlab.pdfbase.ttfonts import TTFont
 # ---------- إعداد الصفحة ----------
 st.set_page_config(page_title="نظام إدارة الإيجارات", page_icon="🏢", layout="wide")
 
-# ---------- تنسيق الاتجاه من اليمين لليسار ----------
-st.markdown("""
-<style>
-    html, body, [class*="css"] {
-        direction: RTL;
-        text-align: right;
-    }
-    .stApp {
-        direction: RTL;
-        text-align: right;
-    }
-    .stMarkdown, .stText, .stDataFrame, .stTable {
-        direction: RTL;
-        text-align: right;
-    }
-    div[data-testid="stDataFrame"] div[role="grid"] {
-        direction: RTL;
-        text-align: right;
-    }
-    .stSelectbox, .stTextInput, .stNumberInput, .stDateInput {
-        direction: RTL;
-        text-align: right;
-    }
-</style>
-""", unsafe_allow_html=True)
-
-st.title("🏢 نظام إدارة الإيجارات")
-
 # ---------- دوال دعم العربية في PDF ----------
 def download_arabic_font():
-    """تحميل خط Amiri إذا لم يكن موجوداً"""
     font_path = "Amiri-Regular.ttf"
     if not os.path.exists(font_path):
         url = "https://github.com/aliftype/amiri/raw/main/fonts/Amiri-Regular.ttf"
@@ -64,7 +35,6 @@ def download_arabic_font():
     return font_path
 
 def setup_arabic_font():
-    """تسجيل الخط العربي في reportlab"""
     font_path = download_arabic_font()
     if font_path and os.path.exists(font_path):
         pdfmetrics.registerFont(TTFont('Amiri', font_path))
@@ -73,44 +43,31 @@ def setup_arabic_font():
         return 'Helvetica'
 
 def reshape_arabic_text(text):
-    """تحويل النص العربي ليكون جاهزاً للرسم"""
     reshaped = arabic_reshaper.reshape(str(text))
     bidi_text = get_display(reshaped)
     return bidi_text
 
 def export_df_to_pdf(df, title, file_name, columns_order=None):
-    """تصدير DataFrame إلى PDF بدعم عربي كامل"""
     if columns_order:
         df = df[columns_order]
-    
     buffer = io.BytesIO()
     c = canvas.Canvas(buffer, pagesize=A4)
     width, height = A4
-    
-    # تسجيل الخط العربي
     font_name = setup_arabic_font()
     c.setFont(font_name, 10)
-    
-    # العنوان
     c.setFont(font_name, 16)
     c.drawRightString(width - 50, height - 50, reshape_arabic_text(title))
     c.setFont(font_name, 8)
-    
-    # كتابة رؤوس الأعمدة
     x_start = width - 50
     y = height - 80
     col_widths = [max(len(reshape_arabic_text(col)) * 4, 80) for col in df.columns]
     total_width = sum(col_widths)
-    
-    # رسم خط علوي
     c.line(x_start - total_width, y, x_start, y)
     y -= 15
     for i, col in enumerate(df.columns):
         x = x_start - sum(col_widths[:i+1])
         c.drawRightString(x, y, reshape_arabic_text(col))
     y -= 15
-    
-    # رسم البيانات
     for _, row in df.iterrows():
         if y < 50:
             c.showPage()
@@ -120,29 +77,22 @@ def export_df_to_pdf(df, title, file_name, columns_order=None):
             x = x_start - sum(col_widths[:i+1])
             c.drawRightString(x, y, reshape_arabic_text(value))
         y -= 15
-    
     c.save()
     buffer.seek(0)
     st.download_button("تحميل PDF", data=buffer, file_name=file_name, mime="application/pdf")
 
 # ---------- إدارة قاعدة البيانات ----------
 def get_conn():
-    """فتح اتصال جديد بقاعدة البيانات"""
     conn = sqlite3.connect("rentals.db", timeout=10)
     conn.execute("PRAGMA journal_mode=WAL;")
     conn.execute("PRAGMA synchronous=NORMAL;")
     return conn
 
 def ensure_columns(cur, table_name, required_columns):
-    """
-    فحص الأعمدة المفقودة في جدول وإضافتها تلقائيًا.
-    required_columns: قائمة من الأعمدة المطلوبة (اسم العمود فقط).
-    """
     cur.execute(f"PRAGMA table_info({table_name})")
     existing_columns = [col[1] for col in cur.fetchall()]
     for col_name in required_columns:
         if col_name not in existing_columns:
-            # تحديد نوع البيانات بناءً على اسم العمود
             if col_name in ('interval_months', 'tax_included'):
                 cur.execute(f"ALTER TABLE {table_name} ADD COLUMN {col_name} INTEGER DEFAULT 0")
             elif col_name == 'tax_rate':
@@ -154,11 +104,17 @@ def ensure_columns(cur, table_name, required_columns):
 
 @st.cache_resource
 def init_db():
-    """إنشاء الجداول والفهارس مع ترحيل آمن للأعمدة الناقصة"""
     conn = get_conn()
     cur = conn.cursor()
 
-    # إنشاء الجداول
+    # إنشاء جدول الإعدادات
+    cur.execute('''
+        CREATE TABLE IF NOT EXISTS settings (
+            key TEXT PRIMARY KEY,
+            value TEXT
+        )
+    ''')
+
     cur.execute('''
         CREATE TABLE IF NOT EXISTS tenants (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -170,7 +126,6 @@ def init_db():
             notes TEXT
         )
     ''')
-
     cur.execute('''
         CREATE TABLE IF NOT EXISTS properties (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -181,7 +136,6 @@ def init_db():
             area TEXT
         )
     ''')
-
     cur.execute('''
         CREATE TABLE IF NOT EXISTS contracts (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -202,7 +156,6 @@ def init_db():
             FOREIGN KEY (property_id) REFERENCES properties(id)
         )
     ''')
-
     cur.execute('''
         CREATE TABLE IF NOT EXISTS payments (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -219,7 +172,6 @@ def init_db():
             FOREIGN KEY (tenant_id) REFERENCES tenants(id)
         )
     ''')
-
     cur.execute('''
         CREATE TABLE IF NOT EXISTS receipts (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -237,7 +189,6 @@ def init_db():
             FOREIGN KEY (payment_id) REFERENCES payments(id)
         )
     ''')
-
     cur.execute('''
         CREATE TABLE IF NOT EXISTS notes (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -249,7 +200,6 @@ def init_db():
             FOREIGN KEY (tenant_id) REFERENCES tenants(id)
         )
     ''')
-
     cur.execute('''
         CREATE TABLE IF NOT EXISTS alerts (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -261,12 +211,10 @@ def init_db():
         )
     ''')
 
-    # ✅ ترحيل: إضافة الأعمدة المفقودة
     ensure_columns(cur, 'payments', ['due_date', 'paid_date', 'attachment'])
     ensure_columns(cur, 'contracts', ['interval_months', 'tax_included', 'tax_rate', 'contract_file'])
     ensure_columns(cur, 'receipts', ['attachment'])
 
-    # إنشاء الفهارس
     cur.execute("CREATE INDEX IF NOT EXISTS idx_payments_due_date ON payments(due_date)")
     cur.execute("CREATE INDEX IF NOT EXISTS idx_payments_status ON payments(status)")
     cur.execute("CREATE INDEX IF NOT EXISTS idx_contracts_tenant ON contracts(tenant_id)")
@@ -277,7 +225,167 @@ def init_db():
 
 init_db()
 
-# ---------- دوال مساعدة ----------
+# ---------- دوال الإعدادات ----------
+def load_settings():
+    """تحميل الإعدادات من قاعدة البيانات إلى dict"""
+    conn = get_conn()
+    cur = conn.cursor()
+    cur.execute("SELECT key, value FROM settings")
+    rows = cur.fetchall()
+    conn.close()
+    settings = {}
+    for row in rows:
+        try:
+            # تحويل القيم الرقمية
+            if row[0] in ('font_size',):
+                settings[row[0]] = int(row[1])
+            else:
+                settings[row[0]] = row[1]
+        except:
+            settings[row[0]] = row[1]
+    # تعيين القيم الافتراضية إذا لم تكن موجودة
+    defaults = {
+        'font_size': 16,
+        'primary_color': '#1e3a8a',   # أزرق داكن (مثل وافق)
+        'secondary_color': '#f97316', # برتقالي (مثل وافق)
+        'background_color': '#f8fafc', # خلفية فاتحة
+        'logo': None,
+        'company_name': 'نظام إدارة الإيجارات'
+    }
+    for key, value in defaults.items():
+        if key not in settings:
+            settings[key] = value
+    return settings
+
+def save_setting(key, value):
+    """حفظ إعداد في قاعدة البيانات"""
+    conn = get_conn()
+    cur = conn.cursor()
+    # تحويل القيمة إلى نص مناسب
+    if value is None:
+        value_str = ''
+    elif isinstance(value, bytes):
+        # نحفظ البايتات مباشرة في العمود النصي؟ نستخدم base64 أو نحفظ في ملف
+        # الأفضل تخزين الشعار في ملف منفصل، لكن للبساطة نستخدم base64
+        import base64
+        value_str = base64.b64encode(value).decode('utf-8')
+    else:
+        value_str = str(value)
+    cur.execute('''
+        INSERT INTO settings (key, value) VALUES (?, ?)
+        ON CONFLICT(key) DO UPDATE SET value = excluded.value
+    ''', (key, value_str))
+    conn.commit()
+    conn.close()
+    st.cache_data.clear()
+
+def load_logo_data():
+    """تحميل بيانات الشعار من الإعدادات"""
+    settings = load_settings()
+    logo_b64 = settings.get('logo', None)
+    if logo_b64:
+        import base64
+        return base64.b64decode(logo_b64)
+    return None
+
+# ---------- قراءة الإعدادات الحالية ----------
+settings = load_settings()
+font_size = settings['font_size']
+primary_color = settings['primary_color']
+secondary_color = settings['secondary_color']
+background_color = settings['background_color']
+logo_data = load_logo_data()
+
+# ---------- تطبيق CSS مخصص مع الألوان والخط ----------
+st.markdown(f"""
+<style>
+    html, body, [class*="css"] {{
+        direction: RTL;
+        text-align: right;
+        font-size: {font_size}px;
+    }}
+    .stApp {{
+        background-color: {background_color};
+    }}
+    /* تلوين الشريط الجانبي */
+    .stSidebar {{
+        background-color: {primary_color};
+        color: white;
+    }}
+    .stSidebar [data-testid="stMarkdown"] {{
+        color: white;
+    }}
+    .stSidebar .stRadio label, .stSidebar .stSelectbox label {{
+        color: white !important;
+    }}
+    /* أزرار */
+    .stButton>button {{
+        background-color: {secondary_color};
+        color: white;
+        border-radius: 8px;
+        border: none;
+        padding: 8px 16px;
+        font-weight: bold;
+    }}
+    .stButton>button:hover {{
+        background-color: {primary_color};
+        color: white;
+    }}
+    /* عناوين */
+    h1, h2, h3, h4 {{
+        color: {primary_color};
+    }}
+    /* بطاقات المتر */
+    .stMetric {{
+        background-color: white;
+        padding: 15px;
+        border-radius: 10px;
+        box-shadow: 0 2px 5px rgba(0,0,0,0.1);
+        text-align: center;
+    }}
+    /* جداول */
+    .stDataFrame, .stTable {{
+        background-color: white;
+        border-radius: 10px;
+        padding: 10px;
+        box-shadow: 0 2px 5px rgba(0,0,0,0.1);
+    }}
+    /* الشريط العلوي */
+    .stApp header {{
+        background-color: {primary_color};
+        color: white;
+    }}
+</style>
+""", unsafe_allow_html=True)
+
+# ---------- عرض الشعار والتحكم في الخط في الشريط الجانبي ----------
+if logo_data:
+    st.sidebar.image(logo_data, width=150)
+else:
+    st.sidebar.markdown("🏢 **نظام الإدارة**")
+
+st.sidebar.markdown("---")
+
+# أزرار تكبير وتصغير الخط
+col_up, col_down = st.sidebar.columns(2)
+with col_up:
+    if st.button('➕ تكبير الخط', use_container_width=True):
+        save_setting('font_size', min(24, font_size + 1))
+        st.rerun()
+with col_down:
+    if st.button('➖ تصغير الخط', use_container_width=True):
+        save_setting('font_size', max(10, font_size - 1))
+        st.rerun()
+
+st.sidebar.markdown("---")
+
+# القائمة الجانبية
+menu = st.sidebar.radio(
+    "القائمة الرئيسية",
+    ["لوحة التحكم", "المستأجرين", "العقارات", "العقود", "الدفعات", "صفحة السداد", "التقارير", "الإعدادات", "نسخ احتياطي"]
+)
+
+# ---------- دوال مساعدة عامة ----------
 def add_note(tenant_id, note_text, priority='عادية', is_alert=0):
     conn = get_conn()
     cur = conn.cursor()
@@ -348,11 +456,6 @@ def hijri_to_gregorian(hijri_str):
     return date(greg.year, greg.month, greg.day)
 
 def display_dataframe_with_reorder(df, key_prefix):
-    """
-    عرض DataFrame مع إمكانية اختيار الأعمدة وترتيبها.
-    df: DataFrame المراد عرضه.
-    key_prefix: مفتاح فريد لتخزين الاختيار في session_state.
-    """
     columns = list(df.columns)
     default = st.session_state.get(f"{key_prefix}_order", columns)
     selected_cols = st.multiselect(
@@ -367,7 +470,7 @@ def display_dataframe_with_reorder(df, key_prefix):
     st.dataframe(df, use_container_width=True)
     return df, selected_cols
 
-# ---------- دوال قراءة البيانات مع الكاش ----------
+# ---------- دوال قراءة البيانات ----------
 @st.cache_data(ttl=60)
 def load_tenants():
     conn = get_conn()
@@ -397,7 +500,6 @@ def load_contracts():
     cur.execute("PRAGMA table_info(contracts)")
     columns = [col[1] for col in cur.fetchall()]
     select_cols = []
-    # تعيين أسماء عربية للأعمدة
     aliases = {
         'id': 'الرقم',
         'contract_number': 'رقم العقد',
@@ -425,7 +527,6 @@ def load_contracts():
                 select_cols.append("NULL as 'ملف العقد'")
             else:
                 select_cols.append(f"NULL as '{aliases[col]}'")
-    # إضافة أسماء المستأجر والعقار
     query = f"""
         SELECT {', '.join(select_cols)},
                t.name as 'اسم المستأجر', p.name as 'اسم العقار'
@@ -471,12 +572,6 @@ def load_receipts():
     df = pd.read_sql_query(query, conn)
     conn.close()
     return df
-
-# ---------- القائمة الجانبية ----------
-menu = st.sidebar.radio(
-    "القائمة الرئيسية",
-    ["لوحة التحكم", "المستأجرين", "العقارات", "العقود", "الدفعات", "صفحة السداد", "التقارير", "نسخ احتياطي"]
-)
 
 # ================== لوحة التحكم ==================
 if menu == "لوحة التحكم":
@@ -573,7 +668,6 @@ elif menu == "المستأجرين":
             else:
                 st.write("لا توجد ملاحظات.")
 
-            # إضافة ملاحظة
             with st.form("add_note_form"):
                 note_text = st.text_area("ملاحظة جديدة")
                 priority = st.selectbox("الأهمية", ["عادية", "متوسطة", "عالية"])
@@ -715,7 +809,6 @@ elif menu == "الدفعات":
         status_filter = st.selectbox("فلتر الحالة", ["الكل", "مستحق", "مدفوع", "متأخر", "جزئي"])
         df_payments = load_payments(status_filter)
         if not df_payments.empty:
-            # عرض الجدول مع إمكانية إعادة الترتيب (بدون المرفق)
             display_dataframe_with_reorder(df_payments.drop(columns=["المرفق"]), "payments")
             payment_id = st.selectbox("اختر دفعة لتسجيل سداد", df_payments["الرقم"].tolist())
             if payment_id:
@@ -889,7 +982,6 @@ elif menu == "التقارير":
             else:
                 st.info("لا توجد سندات")
 
-            # تصدير Excel و PDF
             if payments:
                 df_payments = pd.DataFrame([(p[1], p[2], p[3], p[2]-p[3], p[5], p[6]) for p in payments],
                                            columns=["تاريخ الاستحقاق", "المبلغ", "المدفوع", "المتبقي", "الحالة", "تاريخ السداد"])
@@ -1093,6 +1185,45 @@ elif menu == "التقارير":
             export_df_to_pdf(df, "تقرير الضرائب", f"ضرائب_{from_date}_to_{to_date}.pdf")
         else:
             st.info("لا توجد سندات في هذه الفترة")
+
+# ================== الإعدادات ==================
+elif menu == "الإعدادات":
+    st.subheader("⚙️ الإعدادات")
+
+    with st.form("settings_form"):
+        company_name = st.text_input("اسم الشركة / النظام", settings.get('company_name', 'نظام إدارة الإيجارات'))
+        primary_color = st.color_picker("اللون الأساسي", settings['primary_color'])
+        secondary_color = st.color_picker("اللون الثانوي", settings['secondary_color'])
+        background_color = st.color_picker("لون الخلفية", settings['background_color'])
+        font_size = st.slider("حجم الخط", min_value=10, max_value=24, value=settings['font_size'])
+        logo_file = st.file_uploader("شعار الشركة (PNG/JPEG)", type=["png", "jpg", "jpeg"])
+        submit_settings = st.form_submit_button("حفظ الإعدادات")
+
+        if submit_settings:
+            save_setting('company_name', company_name)
+            save_setting('primary_color', primary_color)
+            save_setting('secondary_color', secondary_color)
+            save_setting('background_color', background_color)
+            save_setting('font_size', font_size)
+            if logo_file is not None:
+                logo_bytes = logo_file.read()
+                save_setting('logo', logo_bytes)
+            st.success("تم حفظ الإعدادات بنجاح")
+            st.rerun()
+
+    st.markdown("---")
+    st.subheader("معاينة الألوان")
+    st.markdown(f"""
+        <div style="background-color:{primary_color}; color:white; padding:20px; border-radius:10px; text-align:center; margin-bottom:10px;">
+            اللون الأساسي
+        </div>
+        <div style="background-color:{secondary_color}; color:white; padding:20px; border-radius:10px; text-align:center; margin-bottom:10px;">
+            اللون الثانوي
+        </div>
+        <div style="background-color:{background_color}; padding:20px; border-radius:10px; text-align:center; border:1px solid #ccc;">
+            لون الخلفية
+        </div>
+    """, unsafe_allow_html=True)
 
 # ================== النسخ الاحتياطي ==================
 elif menu == "نسخ احتياطي":
