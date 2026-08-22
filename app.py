@@ -21,6 +21,23 @@ def get_conn():
     conn.execute("PRAGMA synchronous=NORMAL;")
     return conn
 
+def ensure_columns(cur, table_name, required_columns):
+    """
+    فحص الأعمدة المفقودة في جدول وإضافتها تلقائيًا.
+    required_columns: قائمة من الأعمدة المطلوبة (اسم العمود فقط).
+    """
+    cur.execute(f"PRAGMA table_info({table_name})")
+    existing_columns = [col[1] for col in cur.fetchall()]
+    for col_name in required_columns:
+        if col_name not in existing_columns:
+            # تحديد نوع البيانات بناءً على اسم العمود
+            if col_name in ('interval_months', 'tax_included'):
+                cur.execute(f"ALTER TABLE {table_name} ADD COLUMN {col_name} INTEGER DEFAULT 0")
+            elif col_name == 'tax_rate':
+                cur.execute(f"ALTER TABLE {table_name} ADD COLUMN {col_name} REAL DEFAULT 0.15")
+            else:
+                cur.execute(f"ALTER TABLE {table_name} ADD COLUMN {col_name} TEXT")
+
 @st.cache_resource
 def init_db():
     """إنشاء الجداول والفهارس مع ترحيل آمن للأعمدة الناقصة"""
@@ -127,13 +144,11 @@ def init_db():
         )
     ''')
 
-    # ترحيل الأعمدة الناقصة
-    cur.execute("PRAGMA table_info(payments)")
-    columns = [col[1] for col in cur.fetchall()]
-    required_columns = ['due_date', 'paid_date']
-    for col in required_columns:
-        if col not in columns:
-            cur.execute(f"ALTER TABLE payments ADD COLUMN {col} TEXT")
+    # ✅ ترحيل: إضافة الأعمدة المفقودة في جدول payments
+    ensure_columns(cur, 'payments', ['due_date', 'paid_date'])
+
+    # ✅ ترحيل: إضافة الأعمدة المفقودة في جدول contracts
+    ensure_columns(cur, 'contracts', ['interval_months', 'tax_included', 'tax_rate'])
 
     # إنشاء الفهارس
     cur.execute("CREATE INDEX IF NOT EXISTS idx_payments_due_date ON payments(due_date)")
@@ -144,6 +159,7 @@ def init_db():
     conn.commit()
     conn.close()
 
+# استدعاء التهيئة
 init_db()
 
 # ---------- دوال مساعدة ----------
@@ -208,7 +224,6 @@ def mark_alerts_read(tenant_id):
     st.cache_data.clear()
 
 def export_df_to_pdf(df, title, file_name):
-    """تحويل DataFrame إلى PDF وتنزيله"""
     buffer = io.BytesIO()
     c = canvas.Canvas(buffer, pagesize=A4)
     width, height = A4
@@ -218,7 +233,7 @@ def export_df_to_pdf(df, title, file_name):
     y = height - 80
     for i, row in df.iterrows():
         text = " | ".join(str(x) for x in row.values)
-        c.drawString(50, y, text[:100])  # حد أقصى للعرض
+        c.drawString(50, y, text[:100])
         y -= 20
         if y < 50:
             c.showPage()
@@ -228,12 +243,10 @@ def export_df_to_pdf(df, title, file_name):
     st.download_button("تحميل PDF", data=buffer, file_name=file_name, mime="application/pdf")
 
 def gregorian_to_hijri(greg_date):
-    """تحويل تاريخ ميلادي إلى هجري"""
     hijri = convert.Gregorian(greg_date.year, greg_date.month, greg_date.day).to_hijri()
     return f"{hijri.day:02d}-{hijri.month:02d}-{hijri.year}"
 
 def hijri_to_gregorian(hijri_str):
-    """تحويل تاريخ هجري (يوم-شهر-سنة) إلى ميلادي"""
     day, month, year = map(int, hijri_str.split('-'))
     greg = convert.Hijri(year, month, day).to_gregorian()
     return date(greg.year, greg.month, greg.day)
@@ -256,14 +269,33 @@ def load_properties():
 @st.cache_data(ttl=60)
 def load_contracts():
     conn = get_conn()
-    query = '''
-        SELECT c.id, c.contract_number, t.name as tenant, p.name as property,
-               c.start_date, c.end_date, c.rent_amount, c.interval_months,
-               c.deposit_amount, c.status, c.tax_included, c.tax_rate
+    # الحصول على أسماء الأعمدة الفعلية في جدول contracts
+    cur = conn.cursor()
+    cur.execute("PRAGMA table_info(contracts)")
+    columns = [col[1] for col in cur.fetchall()]
+    # بناء قائمة الأعمدة المطلوبة مع القيم الافتراضية إذا كانت مفقودة
+    select_cols = []
+    for col in ['id', 'contract_number', 'start_date', 'end_date', 'rent_amount', 'interval_months', 'deposit_amount', 'status', 'tax_included', 'tax_rate']:
+        if col in columns:
+            select_cols.append(f"c.{col}")
+        else:
+            # استخدام قيمة افتراضية بناءً على نوع العمود
+            if col == 'interval_months':
+                select_cols.append("1 AS interval_months")
+            elif col == 'tax_included':
+                select_cols.append("0 AS tax_included")
+            elif col == 'tax_rate':
+                select_cols.append("0.15 AS tax_rate")
+            else:
+                select_cols.append(f"NULL AS {col}")
+    # إضافة أسماء المستأجر والعقار
+    query = f"""
+        SELECT {', '.join(select_cols)},
+               t.name as tenant, p.name as property
         FROM contracts c
         JOIN tenants t ON c.tenant_id = t.id
         JOIN properties p ON c.property_id = p.id
-    '''
+    """
     df = pd.read_sql_query(query, conn)
     conn.close()
     return df
@@ -591,7 +623,6 @@ elif menu == "صفحة السداد":
             if submit and payment_amount > 0:
                 conn = get_conn()
                 cur = conn.cursor()
-                # جلب المستحقات غير المدفوعة لهذا المستأجر مرتبة بالأقدم
                 cur.execute('''
                     SELECT id, amount, paid_amount, contract_id
                     FROM payments
@@ -601,13 +632,11 @@ elif menu == "صفحة السداد":
                 unpaid_payments = cur.fetchall()
                 remaining_amount = payment_amount
                 receipt_date = payment_date.isoformat()
-                # إنشاء سند واحد بالمبلغ الإجمالي
                 receipt_number = generate_receipt_number()
                 cur.execute('''
                     INSERT INTO receipts (receipt_number, tenant_id, amount, receipt_date, payment_method)
                     VALUES (?, ?, ?, ?, ?)
                 ''', (receipt_number, tenant_id, payment_amount, receipt_date, method))
-                # توزيع المبلغ على الدفعات
                 for pay in unpaid_payments:
                     if remaining_amount <= 0:
                         break
@@ -627,26 +656,7 @@ elif menu == "صفحة السداد":
                 conn.close()
                 st.cache_data.clear()
                 st.success(f"تم تسجيل سداد بمبلغ {payment_amount:,.2f} للمستأجر")
-                # عرض كشف حساب المستأجر
-                st.markdown("---")
-                st.subheader("كشف حساب المستأجر بعد السداد")
-                conn = get_conn()
-                cur = conn.cursor()
-                cur.execute('''
-                    SELECT due_date, amount, paid_amount, (amount - paid_amount) as remaining, status
-                    FROM payments WHERE tenant_id = ? ORDER BY due_date
-                ''', (tenant_id,))
-                payments = cur.fetchall()
-                conn.close()
-                if payments:
-                    df = pd.DataFrame(payments, columns=["تاريخ الاستحقاق", "المبلغ", "المدفوع", "المتبقي", "الحالة"])
-                    st.dataframe(df, use_container_width=True)
-                    total_amount = sum(p[1] for p in payments)
-                    total_paid = sum(p[2] for p in payments)
-                    st.write(f"**إجمالي المستحق:** {total_amount:,.2f}")
-                    st.write(f"**إجمالي المدفوع:** {total_paid:,.2f}")
-                    st.write(f"**المتبقي:** {total_amount - total_paid:,.2f}")
-                st.rerun()  # لتحديث الواجهة
+                st.rerun()
 
 # ================== التقارير ==================
 elif menu == "التقارير":
@@ -658,7 +668,6 @@ elif menu == "التقارير":
         "تقرير الإيرادات",
         "تقرير الضرائب"
     ])
-    # اختيار التقويم
     cal_choice = st.radio("نوع التاريخ", ["ميلادي", "هجري"], horizontal=True)
 
     if report_type == "كشف حساب مستأجر":
@@ -706,7 +715,6 @@ elif menu == "التقارير":
             else:
                 st.info("لا توجد سندات")
 
-            # تصدير Excel
             if payments:
                 output = io.BytesIO()
                 with pd.ExcelWriter(output, engine='xlsxwriter') as writer:
@@ -714,10 +722,8 @@ elif menu == "التقارير":
                     if receipts:
                         pd.DataFrame(receipts, columns=["رقم السند", "المبلغ", "التاريخ", "الطريقة"]).to_excel(writer, sheet_name='سندات', index=False)
                 st.download_button("تحميل Excel", data=output.getvalue(), file_name=f"كشف_حساب_{tenant_name}.xlsx")
-                # تصدير PDF
-                if payments:
-                    df_pdf = pd.DataFrame(payments, columns=["تاريخ الاستحقاق", "المبلغ", "المدفوع", "المتبقي", "الحالة", "تاريخ السداد"])
-                    export_df_to_pdf(df_pdf, f"كشف حساب {tenant_name}", f"كشف_حساب_{tenant_name}.pdf")
+                df_pdf = pd.DataFrame(payments, columns=["تاريخ الاستحقاق", "المبلغ", "المدفوع", "المتبقي", "الحالة", "تاريخ السداد"])
+                export_df_to_pdf(df_pdf, f"كشف حساب {tenant_name}", f"كشف_حساب_{tenant_name}.pdf")
 
     elif report_type == "الدفعات المستحقة بين تاريخين":
         st.markdown("### تقرير الدفعات المستحقة بين تاريخين")
@@ -888,7 +894,6 @@ elif menu == "التقارير":
         df = pd.read_sql_query(query, conn, params=(from_date.isoformat(), to_date.isoformat()))
         conn.close()
         if not df.empty:
-            # حساب الضريبة لكل سند
             tax_values = []
             for _, row in df.iterrows():
                 if row['tax_included'] == 1:
