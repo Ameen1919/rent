@@ -1,15 +1,20 @@
 import streamlit as st
 import pandas as pd
 import sqlite3
+import io
 from datetime import date, timedelta
+from dateutil.relativedelta import relativedelta  # لمعالجة دقيقة لأشهر وسنوات العقود
 
 st.set_page_config(page_title="نظام الإيجارات", layout="wide")
 st.title("🏢 نظام إدارة الإيجارات")
 
 # ---------- إعداد قاعدة البيانات ----------
-@st.cache_resource
+def get_db_connection():
+    conn = sqlite3.connect('rentals.db', check_same_thread=False)
+    return conn
+
 def init_db():
-    conn = sqlite3.connect('rentals.db')
+    conn = get_db_connection()
     cur = conn.cursor()
     cur.execute('''
         CREATE TABLE IF NOT EXISTS tenants (
@@ -38,6 +43,7 @@ def init_db():
             payment_frequency TEXT
         )
     ''')
+    # تصحيح: إضافة paid_date إلى الجدول
     cur.execute('''
         CREATE TABLE IF NOT EXISTS payments (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -46,6 +52,7 @@ def init_db():
             due_date TEXT,
             amount REAL,
             paid_amount REAL DEFAULT 0,
+            paid_date TEXT,
             status TEXT DEFAULT 'مستحق'
         )
     ''')
@@ -69,9 +76,12 @@ def init_db():
         )
     ''')
     conn.commit()
-    return conn
+    conn.close()
 
-conn = init_db()
+# تهيئة قاعدة البيانات
+init_db()
+
+conn = get_db_connection()
 cur = conn.cursor()
 
 # ---------- القائمة الجانبية ----------
@@ -91,7 +101,7 @@ if menu == "لوحة التحكم":
         cur.execute("SELECT COALESCE(SUM(paid_amount),0) FROM payments")
         st.metric("المحصل", f"{cur.fetchone()[0]:,.2f}")
     st.markdown("---")
-    # تنبيهات بسيطة
+    
     cur.execute("SELECT COUNT(*) FROM notes WHERE is_alert = 1")
     alerts_count = cur.fetchone()[0]
     if alerts_count > 0:
@@ -109,7 +119,7 @@ elif menu == "المستأجرين":
         if tenants:
             df = pd.DataFrame(tenants, columns=["ID", "الاسم", "الهاتف", "المنطقة"])
             st.dataframe(df, use_container_width=True)
-            # اختيار مستأجر لعرض التفاصيل
+            
             tenant_ids = [t[0] for t in tenants]
             selected_id = st.selectbox("اختر مستأجر", tenant_ids, format_func=lambda x: next(t[1] for t in tenants if t[0]==x))
             if selected_id:
@@ -118,7 +128,7 @@ elif menu == "المستأجرين":
                 st.markdown(f"**الاسم:** {tenant[1]}")
                 st.markdown(f"**الهاتف:** {tenant[2] or 'غير محدد'}")
                 st.markdown(f"**المنطقة:** {tenant[3] or 'غير محدد'}")
-                # ملاحظات
+                
                 cur.execute("SELECT note_text, priority, is_alert FROM notes WHERE tenant_id = ?", (selected_id,))
                 notes = cur.fetchall()
                 if notes:
@@ -207,16 +217,23 @@ elif menu == "العقود":
                         VALUES (?,?,?,?,?,?)
                     ''', (tenant_id, property_id, start_date.isoformat(), end_date.isoformat(), rent_amount, payment_frequency))
                     contract_id = cur.lastrowid
-                    # جدولة الدفعات
-                    freq_days = {'شهري':30, 'ربع سنوي':90, 'نصف سنوي':180, 'سنوي':365}
-                    interval = freq_days[payment_frequency]
+                    
+                    # تحسين جدولة الدفعات باستخدام relativedelta
+                    freq_delta = {
+                        'شهري': relativedelta(months=1),
+                        'ربع سنوي': relativedelta(months=3),
+                        'نصف سنوي': relativedelta(months=6),
+                        'سنوي': relativedelta(years=1)
+                    }
+                    step = freq_delta[payment_frequency]
                     current = start_date
                     while current <= end_date:
                         cur.execute('''
                             INSERT INTO payments (contract_id, tenant_id, due_date, amount)
                             VALUES (?,?,?,?)
                         ''', (contract_id, tenant_id, current.isoformat(), rent_amount))
-                        current += timedelta(days=interval)
+                        current += step
+                    
                     conn.commit()
                     st.success("تم إنشاء العقد والدفعات")
                     st.rerun()
@@ -224,7 +241,6 @@ elif menu == "العقود":
 # ---------- الدفعات ----------
 elif menu == "الدفعات":
     st.subheader("💰 الدفعات")
-    # فلتر
     status_filter = st.selectbox("فلتر الحالة", ["الكل", "مستحق", "مدفوع", "جزئي"])
     query = '''
         SELECT pay.id, t.name, p.name, pay.due_date, pay.amount, pay.paid_amount, (pay.amount - pay.paid_amount), pay.status
@@ -242,7 +258,7 @@ elif menu == "الدفعات":
     if payments:
         df = pd.DataFrame(payments, columns=["ID", "المستأجر", "العقار", "الاستحقاق", "المبلغ", "المدفوع", "المتبقي", "الحالة"])
         st.dataframe(df, use_container_width=True)
-        # تسجيل دفعة
+        
         payment_id = st.selectbox("اختر دفعة لتسجيل سداد", [p[0] for p in payments])
         if payment_id:
             cur.execute("SELECT amount, paid_amount, tenant_id, contract_id FROM payments WHERE id = ?", (payment_id,))
@@ -285,11 +301,12 @@ elif menu == "التقارير":
                 st.write(f"**إجمالي المستحق:** {total_amount:,.2f}")
                 st.write(f"**إجمالي المدفوع:** {total_paid:,.2f}")
                 st.write(f"**المتبقي:** {total_amount - total_paid:,.2f}")
-                # تصدير Excel
+                
+                # تصدير Excel مصحح بحزمة io
                 output = io.BytesIO()
                 with pd.ExcelWriter(output, engine='xlsxwriter') as writer:
                     df.to_excel(writer, index=False)
-                st.download_button("تحميل Excel", data=output.getvalue(), file_name=f"كشف_حساب_{tenant_name}.xlsx")
+                st.download_button("تحميل Excel", data=output.getvalue(), file_name=f"كشف_حساب_{tenant_name}.xlsx", mime="application/vnd.ms-excel")
             else:
                 st.info("لا توجد دفعات")
     elif report == "الدفعات المستحقة":
@@ -309,7 +326,6 @@ elif menu == "التقارير":
         else:
             st.info("لا توجد مستحقات")
     elif report == "تقرير المناطق":
-        # بسيط
         cur.execute('''
             SELECT COALESCE(t.region, 'غير محدد') as region, COUNT(t.id)
             FROM tenants t
@@ -335,15 +351,14 @@ elif menu == "التقارير":
 # ---------- النسخ الاحتياطي ----------
 elif menu == "نسخ احتياطي":
     st.subheader("💾 نسخ احتياطي يدوي")
-    # تنزيل قاعدة البيانات
     with open('rentals.db', 'rb') as f:
         db_bytes = f.read()
     st.download_button("تحميل قاعدة البيانات", data=db_bytes, file_name=f"rentals_backup_{date.today()}.db")
-    # استعادة
+    
     uploaded = st.file_uploader("استعادة نسخة", type=['db'])
     if uploaded:
         if st.button("استعادة"):
             with open('rentals.db', 'wb') as f:
                 f.write(uploaded.read())
-            st.success("تمت الاستعادة")
+            st.success("تمت الاستعادة بنجاح")
             st.rerun()
