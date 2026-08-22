@@ -17,6 +17,33 @@ from reportlab.pdfbase.ttfonts import TTFont
 
 # ---------- إعداد الصفحة ----------
 st.set_page_config(page_title="نظام إدارة الإيجارات", page_icon="🏢", layout="wide")
+
+# ---------- تنسيق الاتجاه من اليمين لليسار ----------
+st.markdown("""
+<style>
+    html, body, [class*="css"] {
+        direction: RTL;
+        text-align: right;
+    }
+    .stApp {
+        direction: RTL;
+        text-align: right;
+    }
+    .stMarkdown, .stText, .stDataFrame, .stTable {
+        direction: RTL;
+        text-align: right;
+    }
+    div[data-testid="stDataFrame"] div[role="grid"] {
+        direction: RTL;
+        text-align: right;
+    }
+    .stSelectbox, .stTextInput, .stNumberInput, .stDateInput {
+        direction: RTL;
+        text-align: right;
+    }
+</style>
+""", unsafe_allow_html=True)
+
 st.title("🏢 نظام إدارة الإيجارات")
 
 # ---------- دوال دعم العربية في PDF ----------
@@ -344,14 +371,22 @@ def display_dataframe_with_reorder(df, key_prefix):
 @st.cache_data(ttl=60)
 def load_tenants():
     conn = get_conn()
-    df = pd.read_sql_query("SELECT id, name, phone, national_id, address, region FROM tenants", conn)
+    df = pd.read_sql_query("""
+        SELECT id as "الرقم", name as "الاسم", phone as "الهاتف", 
+               national_id as "الرقم القومي", address as "العنوان", region as "المنطقة"
+        FROM tenants
+    """, conn)
     conn.close()
     return df
 
 @st.cache_data(ttl=60)
 def load_properties():
     conn = get_conn()
-    df = pd.read_sql_query("SELECT id, name, description, address, region, area FROM properties", conn)
+    df = pd.read_sql_query("""
+        SELECT id as "الرقم", name as "الاسم", description as "الوصف", 
+               address as "العنوان", region as "المنطقة", area as "المساحة"
+        FROM properties
+    """, conn)
     conn.close()
     return df
 
@@ -362,23 +397,38 @@ def load_contracts():
     cur.execute("PRAGMA table_info(contracts)")
     columns = [col[1] for col in cur.fetchall()]
     select_cols = []
+    # تعيين أسماء عربية للأعمدة
+    aliases = {
+        'id': 'الرقم',
+        'contract_number': 'رقم العقد',
+        'start_date': 'تاريخ البداية',
+        'end_date': 'تاريخ النهاية',
+        'rent_amount': 'قيمة الإيجار',
+        'interval_months': 'دورية السداد (شهور)',
+        'deposit_amount': 'التأمين',
+        'status': 'الحالة',
+        'tax_included': 'شامل الضريبة',
+        'tax_rate': 'نسبة الضريبة',
+        'contract_file': 'ملف العقد'
+    }
     for col in ['id', 'contract_number', 'start_date', 'end_date', 'rent_amount', 'interval_months', 'deposit_amount', 'status', 'tax_included', 'tax_rate', 'contract_file']:
         if col in columns:
-            select_cols.append(f"c.{col}")
+            select_cols.append(f"c.{col} as '{aliases[col]}'")
         else:
             if col == 'interval_months':
-                select_cols.append("1 AS interval_months")
+                select_cols.append("1 as 'دورية السداد (شهور)'")
             elif col == 'tax_included':
-                select_cols.append("0 AS tax_included")
+                select_cols.append("0 as 'شامل الضريبة'")
             elif col == 'tax_rate':
-                select_cols.append("0.15 AS tax_rate")
+                select_cols.append("0.15 as 'نسبة الضريبة'")
             elif col == 'contract_file':
-                select_cols.append("NULL AS contract_file")
+                select_cols.append("NULL as 'ملف العقد'")
             else:
-                select_cols.append(f"NULL AS {col}")
+                select_cols.append(f"NULL as '{aliases[col]}'")
+    # إضافة أسماء المستأجر والعقار
     query = f"""
         SELECT {', '.join(select_cols)},
-               t.name as tenant, p.name as property
+               t.name as 'اسم المستأجر', p.name as 'اسم العقار'
         FROM contracts c
         JOIN tenants t ON c.tenant_id = t.id
         JOIN properties p ON c.property_id = p.id
@@ -391,9 +441,10 @@ def load_contracts():
 def load_payments(status_filter='الكل'):
     conn = get_conn()
     query = '''
-        SELECT pay.id, t.name as tenant, p.name as property, pay.due_date,
-               pay.amount, pay.paid_amount, (pay.amount - pay.paid_amount) as remaining,
-               pay.status, pay.paid_date, pay.attachment
+        SELECT pay.id as 'الرقم', t.name as 'المستأجر', p.name as 'العقار', 
+               pay.due_date as 'تاريخ الاستحقاق', pay.amount as 'المبلغ',
+               pay.paid_amount as 'المدفوع', (pay.amount - pay.paid_amount) as 'المتبقي',
+               pay.status as 'الحالة', pay.paid_date as 'تاريخ السداد', pay.attachment as 'المرفق'
         FROM payments pay
         JOIN tenants t ON pay.tenant_id = t.id
         JOIN contracts c ON pay.contract_id = c.id
@@ -412,7 +463,8 @@ def load_payments(status_filter='الكل'):
 def load_receipts():
     conn = get_conn()
     query = '''
-        SELECT r.receipt_number, t.name as tenant, r.amount, r.receipt_date, r.payment_method
+        SELECT r.receipt_number as 'رقم السند', t.name as 'المستأجر', r.amount as 'المبلغ',
+               r.receipt_date as 'التاريخ', r.payment_method as 'طريقة السداد'
         FROM receipts r
         JOIN tenants t ON r.tenant_id = t.id
     '''
@@ -438,13 +490,13 @@ if menu == "لوحة التحكم":
     with col1:
         st.metric("إجمالي المستأجرين", len(df_tenants))
     with col2:
-        active_contracts = len(df_contracts[df_contracts["status"] == "نشط"])
+        active_contracts = len(df_contracts[df_contracts["الحالة"] == "نشط"])
         st.metric("العقود النشطة", active_contracts)
     with col3:
-        due_payments = len(df_payments[df_payments["status"].isin(["مستحق", "متأخر", "جزئي"])])
+        due_payments = len(df_payments[df_payments["الحالة"].isin(["مستحق", "متأخر", "جزئي"])])
         st.metric("دفعات مستحقة", due_payments)
     with col4:
-        total_collected = df_payments["paid_amount"].sum()
+        total_collected = df_payments["المدفوع"].sum()
         st.metric("إجمالي المحصل", f"{total_collected:,.2f}")
 
     st.markdown("---")
@@ -461,12 +513,12 @@ if menu == "لوحة التحكم":
     today = date.today()
     end_date = today + timedelta(days=30)
     upcoming = df_payments[
-        (df_payments["due_date"] >= today.isoformat()) &
-        (df_payments["due_date"] <= end_date.isoformat()) &
-        (df_payments["status"].isin(["مستحق", "جزئي"]))
+        (df_payments["تاريخ الاستحقاق"] >= today.isoformat()) &
+        (df_payments["تاريخ الاستحقاق"] <= end_date.isoformat()) &
+        (df_payments["الحالة"].isin(["مستحق", "جزئي"]))
     ]
     if not upcoming.empty:
-        upcoming_display = upcoming[["tenant", "property", "due_date", "amount", "paid_amount", "status"]]
+        upcoming_display = upcoming[["المستأجر", "العقار", "تاريخ الاستحقاق", "المبلغ", "المدفوع", "الحالة"]]
         display_dataframe_with_reorder(upcoming_display, "upcoming")
     else:
         st.info("لا توجد دفعات مستحقة خلال 30 يوم.")
@@ -480,7 +532,7 @@ elif menu == "المستأجرين":
         df_tenants = load_tenants()
         if not df_tenants.empty:
             display_dataframe_with_reorder(df_tenants, "tenants")
-            tenant_dict = dict(zip(df_tenants["name"], df_tenants["id"]))
+            tenant_dict = dict(zip(df_tenants["الاسم"], df_tenants["الرقم"]))
             selected_name = st.selectbox("اختر مستأجر لعرض التفاصيل", list(tenant_dict.keys()))
             tenant_id = tenant_dict[selected_name]
 
@@ -615,8 +667,8 @@ elif menu == "العقود":
             st.warning("يجب إضافة مستأجر وعقار أولاً")
         else:
             with st.form("add_contract_form", clear_on_submit=True):
-                tenant_id = st.selectbox("المستأجر", df_tenants["id"], format_func=lambda x: df_tenants[df_tenants["id"]==x]["name"].iloc[0])
-                property_id = st.selectbox("العقار", df_props["id"], format_func=lambda x: df_props[df_props["id"]==x]["name"].iloc[0])
+                tenant_id = st.selectbox("المستأجر", df_tenants["الرقم"], format_func=lambda x: df_tenants[df_tenants["الرقم"]==x]["الاسم"].iloc[0])
+                property_id = st.selectbox("العقار", df_props["الرقم"], format_func=lambda x: df_props[df_props["الرقم"]==x]["الاسم"].iloc[0])
                 contract_number = st.text_input("رقم العقد")
                 start_date = st.date_input("تاريخ البداية")
                 end_date = st.date_input("تاريخ النهاية", value=start_date + relativedelta(years=1))
@@ -663,8 +715,9 @@ elif menu == "الدفعات":
         status_filter = st.selectbox("فلتر الحالة", ["الكل", "مستحق", "مدفوع", "متأخر", "جزئي"])
         df_payments = load_payments(status_filter)
         if not df_payments.empty:
-            display_dataframe_with_reorder(df_payments.drop(columns=["attachment"]), "payments")
-            payment_id = st.selectbox("اختر دفعة لتسجيل سداد", df_payments["id"].tolist())
+            # عرض الجدول مع إمكانية إعادة الترتيب (بدون المرفق)
+            display_dataframe_with_reorder(df_payments.drop(columns=["المرفق"]), "payments")
+            payment_id = st.selectbox("اختر دفعة لتسجيل سداد", df_payments["الرقم"].tolist())
             if payment_id:
                 conn = get_conn()
                 cur = conn.cursor()
@@ -710,7 +763,7 @@ elif menu == "صفحة السداد":
         st.warning("لا يوجد مستأجرين")
     else:
         with st.form("quick_payment_form"):
-            tenant_id = st.selectbox("اختر المستأجر", df_tenants["id"], format_func=lambda x: df_tenants[df_tenants["id"]==x]["name"].iloc[0])
+            tenant_id = st.selectbox("اختر المستأجر", df_tenants["الرقم"], format_func=lambda x: df_tenants[df_tenants["الرقم"]==x]["الاسم"].iloc[0])
             payment_amount = st.number_input("المبلغ الكلي للسداد", min_value=0.0, step=100.0)
             payment_date = st.date_input("تاريخ السداد")
             method = st.selectbox("طريقة السداد", ["نقدي", "تحويل بنكي", "شيك"])
@@ -775,7 +828,7 @@ elif menu == "التقارير":
         if df_tenants.empty:
             st.info("لا يوجد مستأجرين")
         else:
-            tenant_id = st.selectbox("اختر المستأجر", df_tenants["id"], format_func=lambda x: df_tenants[df_tenants["id"]==x]["name"].iloc[0])
+            tenant_id = st.selectbox("اختر المستأجر", df_tenants["الرقم"], format_func=lambda x: df_tenants[df_tenants["الرقم"]==x]["الاسم"].iloc[0])
             conn = get_conn()
             cur = conn.cursor()
             cur.execute("SELECT name FROM tenants WHERE id = ?", (tenant_id,))
@@ -870,13 +923,14 @@ elif menu == "التقارير":
                 from_date = st.date_input("من تاريخ", value=date.today().replace(day=1))
             with col2:
                 to_date = st.date_input("إلى تاريخ", value=date.today())
-        tenant_filter = st.selectbox("اختر مستأجر (اختياري)", ["الكل"] + load_tenants()["name"].tolist())
+        tenant_filter = st.selectbox("اختر مستأجر (اختياري)", ["الكل"] + load_tenants()["الاسم"].tolist())
 
         conn = get_conn()
         cur = conn.cursor()
         query = '''
-            SELECT t.name, p.name, pay.due_date, pay.amount, pay.paid_amount,
-                   (pay.amount - pay.paid_amount) as remaining, pay.status
+            SELECT t.name as 'المستأجر', p.name as 'العقار', pay.due_date as 'تاريخ الاستحقاق', 
+                   pay.amount as 'المبلغ', pay.paid_amount as 'المدفوع',
+                   (pay.amount - pay.paid_amount) as 'المتبقي', pay.status as 'الحالة'
             FROM payments pay
             JOIN tenants t ON pay.tenant_id = t.id
             JOIN contracts c ON pay.contract_id = c.id
@@ -913,12 +967,12 @@ elif menu == "التقارير":
         st.markdown("### تقرير حسب المناطق")
         region_filter = st.text_input("فلتر منطقة (اتركه فارغ للكل)")
         query = '''
-            SELECT COALESCE(t.region, 'غير محدد') as region,
-                   COUNT(DISTINCT t.id) as tenants_count,
-                   COUNT(DISTINCT c.id) as contracts_count,
-                   COALESCE(SUM(pay.amount), 0) as total_amount,
-                   COALESCE(SUM(pay.paid_amount), 0) as total_paid,
-                   COALESCE(SUM(pay.amount - pay.paid_amount), 0) as remaining
+            SELECT COALESCE(t.region, 'غير محدد') as 'المنطقة',
+                   COUNT(DISTINCT t.id) as 'عدد المستأجرين',
+                   COUNT(DISTINCT c.id) as 'عدد العقود',
+                   COALESCE(SUM(pay.amount), 0) as 'إجمالي المستحق',
+                   COALESCE(SUM(pay.paid_amount), 0) as 'إجمالي المدفوع',
+                   COALESCE(SUM(pay.amount - pay.paid_amount), 0) as 'المتبقي'
             FROM tenants t
             LEFT JOIN contracts c ON t.id = c.tenant_id
             LEFT JOIN properties p ON c.property_id = p.id
@@ -929,12 +983,12 @@ elif menu == "التقارير":
             params = (region_filter,)
         else:
             params = ()
-        query += " GROUP BY COALESCE(t.region, 'غير محدد') ORDER BY region"
+        query += " GROUP BY COALESCE(t.region, 'غير محدد') ORDER BY 'المنطقة'"
         conn = get_conn()
         df = pd.read_sql_query(query, conn, params=params)
         conn.close()
         if not df.empty:
-            df["نسبة التحصيل"] = (df["total_paid"] / df["total_amount"] * 100).fillna(0).round(1).astype(str) + "%"
+            df["نسبة التحصيل"] = (df["إجمالي المدفوع"] / df["إجمالي المستحق"] * 100).fillna(0).round(1).astype(str) + "%"
             display_dataframe_with_reorder(df, "report_regions")
             output = io.BytesIO()
             with pd.ExcelWriter(output, engine='xlsxwriter') as writer:
@@ -966,7 +1020,8 @@ elif menu == "التقارير":
                 to_date = st.date_input("إلى تاريخ", value=date.today())
         conn = get_conn()
         query = '''
-            SELECT r.receipt_date, t.name, r.receipt_number, r.amount, r.payment_method
+            SELECT r.receipt_date as 'التاريخ', t.name as 'المستأجر', r.receipt_number as 'رقم السند',
+                   r.amount as 'المبلغ', r.payment_method as 'طريقة السداد'
             FROM receipts r
             JOIN tenants t ON r.tenant_id = t.id
             WHERE r.receipt_date BETWEEN ? AND ?
@@ -976,7 +1031,7 @@ elif menu == "التقارير":
         conn.close()
         if not df.empty:
             display_dataframe_with_reorder(df, "report_revenue")
-            total = df["amount"].sum()
+            total = df["المبلغ"].sum()
             st.write(f"**إجمالي الإيرادات:** {total:,.2f}")
             output = io.BytesIO()
             with pd.ExcelWriter(output, engine='xlsxwriter') as writer:
@@ -1008,8 +1063,8 @@ elif menu == "التقارير":
                 to_date = st.date_input("إلى تاريخ", value=date.today())
         conn = get_conn()
         query = '''
-            SELECT r.receipt_date, t.name as tenant, r.receipt_number, r.amount,
-                   c.tax_included, c.tax_rate
+            SELECT r.receipt_date as 'التاريخ', t.name as 'المستأجر', r.receipt_number as 'رقم السند',
+                   r.amount as 'المبلغ', c.tax_included as 'شامل الضريبة', c.tax_rate as 'نسبة الضريبة'
             FROM receipts r
             JOIN tenants t ON r.tenant_id = t.id
             LEFT JOIN contracts c ON r.contract_id = c.id
@@ -1021,13 +1076,13 @@ elif menu == "التقارير":
         if not df.empty:
             tax_values = []
             for _, row in df.iterrows():
-                if row['tax_included'] == 1:
-                    tax = row['amount'] * (row['tax_rate'] / (1 + row['tax_rate']))
+                if row['شامل الضريبة'] == 1:
+                    tax = row['المبلغ'] * (row['نسبة الضريبة'] / (1 + row['نسبة الضريبة']))
                 else:
-                    tax = row['amount'] * row['tax_rate']
+                    tax = row['المبلغ'] * row['نسبة الضريبة']
                 tax_values.append(tax)
             df['الضريبة'] = tax_values
-            df['صافي المبلغ'] = df['amount'] - df['الضريبة']
+            df['صافي المبلغ'] = df['المبلغ'] - df['الضريبة']
             display_dataframe_with_reorder(df, "report_tax")
             total_tax = df['الضريبة'].sum()
             st.write(f"**إجمالي الضريبة:** {total_tax:,.2f}")
