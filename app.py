@@ -8,10 +8,95 @@ import time
 from hijri_converter import convert
 from reportlab.lib.pagesizes import A4
 from reportlab.pdfgen import canvas
+import requests
+import os
+import arabic_reshaper
+from bidi.algorithm import get_display
+from reportlab.pdfbase import pdfmetrics
+from reportlab.pdfbase.ttfonts import TTFont
 
 # ---------- إعداد الصفحة ----------
 st.set_page_config(page_title="نظام إدارة الإيجارات", page_icon="🏢", layout="wide")
 st.title("🏢 نظام إدارة الإيجارات")
+
+# ---------- دوال دعم العربية في PDF ----------
+def download_arabic_font():
+    """تحميل خط Amiri إذا لم يكن موجوداً"""
+    font_path = "Amiri-Regular.ttf"
+    if not os.path.exists(font_path):
+        url = "https://github.com/aliftype/amiri/raw/main/fonts/Amiri-Regular.ttf"
+        try:
+            r = requests.get(url, timeout=10)
+            if r.status_code == 200:
+                with open(font_path, "wb") as f:
+                    f.write(r.content)
+            else:
+                return None
+        except:
+            return None
+    return font_path
+
+def setup_arabic_font():
+    """تسجيل الخط العربي في reportlab"""
+    font_path = download_arabic_font()
+    if font_path and os.path.exists(font_path):
+        pdfmetrics.registerFont(TTFont('Amiri', font_path))
+        return 'Amiri'
+    else:
+        return 'Helvetica'
+
+def reshape_arabic_text(text):
+    """تحويل النص العربي ليكون جاهزاً للرسم"""
+    reshaped = arabic_reshaper.reshape(str(text))
+    bidi_text = get_display(reshaped)
+    return bidi_text
+
+def export_df_to_pdf(df, title, file_name, columns_order=None):
+    """تصدير DataFrame إلى PDF بدعم عربي كامل"""
+    if columns_order:
+        df = df[columns_order]
+    
+    buffer = io.BytesIO()
+    c = canvas.Canvas(buffer, pagesize=A4)
+    width, height = A4
+    
+    # تسجيل الخط العربي
+    font_name = setup_arabic_font()
+    c.setFont(font_name, 10)
+    
+    # العنوان
+    c.setFont(font_name, 16)
+    c.drawRightString(width - 50, height - 50, reshape_arabic_text(title))
+    c.setFont(font_name, 8)
+    
+    # كتابة رؤوس الأعمدة
+    x_start = width - 50
+    y = height - 80
+    col_widths = [max(len(reshape_arabic_text(col)) * 4, 80) for col in df.columns]
+    total_width = sum(col_widths)
+    
+    # رسم خط علوي
+    c.line(x_start - total_width, y, x_start, y)
+    y -= 15
+    for i, col in enumerate(df.columns):
+        x = x_start - sum(col_widths[:i+1])
+        c.drawRightString(x, y, reshape_arabic_text(col))
+    y -= 15
+    
+    # رسم البيانات
+    for _, row in df.iterrows():
+        if y < 50:
+            c.showPage()
+            c.setFont(font_name, 8)
+            y = height - 50
+        for i, value in enumerate(row):
+            x = x_start - sum(col_widths[:i+1])
+            c.drawRightString(x, y, reshape_arabic_text(value))
+        y -= 15
+    
+    c.save()
+    buffer.seek(0)
+    st.download_button("تحميل PDF", data=buffer, file_name=file_name, mime="application/pdf")
 
 # ---------- إدارة قاعدة البيانات ----------
 def get_conn():
@@ -226,25 +311,6 @@ def mark_alerts_read(tenant_id):
     conn.close()
     st.cache_data.clear()
 
-def export_df_to_pdf(df, title, file_name):
-    buffer = io.BytesIO()
-    c = canvas.Canvas(buffer, pagesize=A4)
-    width, height = A4
-    c.setFont("Helvetica-Bold", 16)
-    c.drawString(50, height - 50, title)
-    c.setFont("Helvetica", 10)
-    y = height - 80
-    for i, row in df.iterrows():
-        text = " | ".join(str(x) for x in row.values)
-        c.drawString(50, y, text[:100])
-        y -= 20
-        if y < 50:
-            c.showPage()
-            y = height - 50
-    c.save()
-    buffer.seek(0)
-    st.download_button("تحميل PDF", data=buffer, file_name=file_name, mime="application/pdf")
-
 def gregorian_to_hijri(greg_date):
     hijri = convert.Gregorian(greg_date.year, greg_date.month, greg_date.day).to_hijri()
     return f"{hijri.day:02d}-{hijri.month:02d}-{hijri.year}"
@@ -253,6 +319,26 @@ def hijri_to_gregorian(hijri_str):
     day, month, year = map(int, hijri_str.split('-'))
     greg = convert.Hijri(year, month, day).to_gregorian()
     return date(greg.year, greg.month, greg.day)
+
+def display_dataframe_with_reorder(df, key_prefix):
+    """
+    عرض DataFrame مع إمكانية اختيار الأعمدة وترتيبها.
+    df: DataFrame المراد عرضه.
+    key_prefix: مفتاح فريد لتخزين الاختيار في session_state.
+    """
+    columns = list(df.columns)
+    default = st.session_state.get(f"{key_prefix}_order", columns)
+    selected_cols = st.multiselect(
+        "اختر الأعمدة وترتيبها",
+        options=columns,
+        default=default,
+        key=f"{key_prefix}_cols"
+    )
+    if selected_cols:
+        df = df[selected_cols]
+        st.session_state[f"{key_prefix}_order"] = selected_cols
+    st.dataframe(df, use_container_width=True)
+    return df, selected_cols
 
 # ---------- دوال قراءة البيانات مع الكاش ----------
 @st.cache_data(ttl=60)
@@ -380,7 +466,8 @@ if menu == "لوحة التحكم":
         (df_payments["status"].isin(["مستحق", "جزئي"]))
     ]
     if not upcoming.empty:
-        st.dataframe(upcoming[["tenant", "property", "due_date", "amount", "paid_amount", "status"]], use_container_width=True)
+        upcoming_display = upcoming[["tenant", "property", "due_date", "amount", "paid_amount", "status"]]
+        display_dataframe_with_reorder(upcoming_display, "upcoming")
     else:
         st.info("لا توجد دفعات مستحقة خلال 30 يوم.")
 
@@ -392,7 +479,7 @@ elif menu == "المستأجرين":
     with tab1:
         df_tenants = load_tenants()
         if not df_tenants.empty:
-            st.dataframe(df_tenants, use_container_width=True)
+            display_dataframe_with_reorder(df_tenants, "tenants")
             tenant_dict = dict(zip(df_tenants["name"], df_tenants["id"]))
             selected_name = st.selectbox("اختر مستأجر لعرض التفاصيل", list(tenant_dict.keys()))
             tenant_id = tenant_dict[selected_name]
@@ -481,7 +568,7 @@ elif menu == "العقارات":
     with tab1:
         df_props = load_properties()
         if not df_props.empty:
-            st.dataframe(df_props, use_container_width=True)
+            display_dataframe_with_reorder(df_props, "properties")
         else:
             st.info("لا توجد عقارات")
 
@@ -517,7 +604,7 @@ elif menu == "العقود":
     with tab1:
         df_contracts = load_contracts()
         if not df_contracts.empty:
-            st.dataframe(df_contracts, use_container_width=True)
+            display_dataframe_with_reorder(df_contracts, "contracts")
         else:
             st.info("لا توجد عقود")
 
@@ -576,7 +663,7 @@ elif menu == "الدفعات":
         status_filter = st.selectbox("فلتر الحالة", ["الكل", "مستحق", "مدفوع", "متأخر", "جزئي"])
         df_payments = load_payments(status_filter)
         if not df_payments.empty:
-            st.dataframe(df_payments.drop(columns=["attachment"]), use_container_width=True)
+            display_dataframe_with_reorder(df_payments.drop(columns=["attachment"]), "payments")
             payment_id = st.selectbox("اختر دفعة لتسجيل سداد", df_payments["id"].tolist())
             if payment_id:
                 conn = get_conn()
@@ -712,7 +799,6 @@ elif menu == "التقارير":
                 st.write(f"التاريخ: {date.today().isoformat()} م")
 
             if payments:
-                # عرض كل دفعة مع إمكانية تحميل المرفق
                 for pay in payments:
                     pay_id, due, amount, paid, remaining, status, paid_date, attachment = pay
                     with st.expander(f"📅 تاريخ الاستحقاق: {due} | المبلغ: {amount:,.2f} | المدفوع: {paid:,.2f} | المتبقي: {remaining:,.2f} | الحالة: {status}"):
@@ -725,7 +811,6 @@ elif menu == "التقارير":
                             )
                         else:
                             st.write("لا يوجد مرفق لهذه الدفعة.")
-                # ملخص
                 total_amount = sum(p[2] for p in payments)
                 total_paid = sum(p[3] for p in payments)
                 st.write(f"**إجمالي المستحق:** {total_amount:,.2f}")
@@ -751,7 +836,7 @@ elif menu == "التقارير":
             else:
                 st.info("لا توجد سندات")
 
-            # تصدير Excel و PDF (مع حذف عمود المرفق من التصدير)
+            # تصدير Excel و PDF
             if payments:
                 df_payments = pd.DataFrame([(p[1], p[2], p[3], p[2]-p[3], p[5], p[6]) for p in payments],
                                            columns=["تاريخ الاستحقاق", "المبلغ", "المدفوع", "المتبقي", "الحالة", "تاريخ السداد"])
@@ -809,7 +894,7 @@ elif menu == "التقارير":
 
         if dues:
             df = pd.DataFrame(dues, columns=["المستأجر", "العقار", "تاريخ الاستحقاق", "المبلغ", "المدفوع", "المتبقي", "الحالة"])
-            st.dataframe(df, use_container_width=True)
+            display_dataframe_with_reorder(df, "report_due")
             total_amount = sum(d[3] for d in dues)
             total_paid = sum(d[4] for d in dues)
             st.write(f"**إجمالي المستحق:** {total_amount:,.2f}")
@@ -850,7 +935,7 @@ elif menu == "التقارير":
         conn.close()
         if not df.empty:
             df["نسبة التحصيل"] = (df["total_paid"] / df["total_amount"] * 100).fillna(0).round(1).astype(str) + "%"
-            st.dataframe(df, use_container_width=True)
+            display_dataframe_with_reorder(df, "report_regions")
             output = io.BytesIO()
             with pd.ExcelWriter(output, engine='xlsxwriter') as writer:
                 df.to_excel(writer, index=False)
@@ -890,7 +975,7 @@ elif menu == "التقارير":
         df = pd.read_sql_query(query, conn, params=(from_date.isoformat(), to_date.isoformat()))
         conn.close()
         if not df.empty:
-            st.dataframe(df, use_container_width=True)
+            display_dataframe_with_reorder(df, "report_revenue")
             total = df["amount"].sum()
             st.write(f"**إجمالي الإيرادات:** {total:,.2f}")
             output = io.BytesIO()
@@ -943,7 +1028,7 @@ elif menu == "التقارير":
                 tax_values.append(tax)
             df['الضريبة'] = tax_values
             df['صافي المبلغ'] = df['amount'] - df['الضريبة']
-            st.dataframe(df, use_container_width=True)
+            display_dataframe_with_reorder(df, "report_tax")
             total_tax = df['الضريبة'].sum()
             st.write(f"**إجمالي الضريبة:** {total_tax:,.2f}")
             output = io.BytesIO()
