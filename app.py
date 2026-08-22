@@ -4,7 +4,6 @@ import sqlite3
 import io
 from datetime import date, timedelta
 from dateutil.relativedelta import relativedelta
-import time
 
 # ---------- إعداد الصفحة ----------
 st.set_page_config(page_title="نظام إدارة الإيجارات", page_icon="🏢", layout="wide")
@@ -20,10 +19,11 @@ def get_conn():
 
 @st.cache_resource
 def init_db():
-    """إنشاء الجداول والفهارس مرة واحدة"""
+    """إنشاء الجداول والفهارس مع ترحيل آمن للأعمدة الناقصة"""
     conn = get_conn()
     cur = conn.cursor()
 
+    # إنشاء الجداول
     cur.execute('''
         CREATE TABLE IF NOT EXISTS tenants (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -121,7 +121,15 @@ def init_db():
         )
     ''')
 
-    # فهارس لتحسين الأداء
+    # ✅ ترحيل: فحص الأعمدة المفقودة في جدول payments وإضافتها
+    cur.execute("PRAGMA table_info(payments)")
+    columns = [col[1] for col in cur.fetchall()]
+    required_columns = ['due_date', 'paid_date']
+    for col in required_columns:
+        if col not in columns:
+            cur.execute(f"ALTER TABLE payments ADD COLUMN {col} TEXT")
+
+    # إنشاء الفهارس
     cur.execute("CREATE INDEX IF NOT EXISTS idx_payments_due_date ON payments(due_date)")
     cur.execute("CREATE INDEX IF NOT EXISTS idx_payments_status ON payments(status)")
     cur.execute("CREATE INDEX IF NOT EXISTS idx_contracts_tenant ON contracts(tenant_id)")
@@ -132,7 +140,7 @@ def init_db():
 
 init_db()
 
-# ---------- دوال مساعدة مع التخزين المؤقت ----------
+# ---------- دوال مساعدة ----------
 def add_note(tenant_id, note_text, priority='عادية', is_alert=0):
     conn = get_conn()
     cur = conn.cursor()
@@ -154,7 +162,6 @@ def generate_receipt_number():
     return f"RCP-{int(time.time())}"
 
 def create_payment_schedule(contract_id, tenant_id, start_date, end_date, rent_amount, frequency):
-    """إنشاء دفعات باستخدام relativedelta لتواريخ دقيقة"""
     freq_map = {
         'شهري': relativedelta(months=1),
         'ربع سنوي': relativedelta(months=3),
@@ -203,7 +210,7 @@ def mark_alerts_read(tenant_id):
     conn.close()
     st.cache_data.clear()
 
-# ---------- دوال قراءة البيانات مع كاش ----------
+# ---------- دوال قراءة البيانات مع الكاش ----------
 @st.cache_data(ttl=60)
 def load_tenants():
     conn = get_conn()
@@ -325,7 +332,6 @@ elif menu == "المستأجرين":
         df_tenants = load_tenants()
         if not df_tenants.empty:
             st.dataframe(df_tenants, use_container_width=True)
-            # اختيار مستأجر لعرض التفاصيل
             tenant_dict = dict(zip(df_tenants["name"], df_tenants["id"]))
             selected_name = st.selectbox("اختر مستأجر لعرض التفاصيل", list(tenant_dict.keys()))
             tenant_id = tenant_dict[selected_name]
@@ -358,11 +364,8 @@ elif menu == "المستأجرين":
 
             # ملاحظات
             st.markdown("**الملاحظات:**")
-            conn = get_conn()
-            cur = conn.cursor()
             cur.execute("SELECT note_date, note_text, priority, is_alert FROM notes WHERE tenant_id = ? ORDER BY note_date DESC", (tenant_id,))
             notes = cur.fetchall()
-            conn.close()
             if notes:
                 for n in notes:
                     icon = "⚠️" if n[3] else ""
@@ -505,7 +508,6 @@ elif menu == "الدفعات":
         df_payments = load_payments(status_filter)
         if not df_payments.empty:
             st.dataframe(df_payments, use_container_width=True)
-            # تسجيل دفعة لدفعة مختارة
             payment_id = st.selectbox("اختر دفعة لتسجيل سداد", df_payments["id"].tolist())
             if payment_id:
                 conn = get_conn()
@@ -565,7 +567,6 @@ elif menu == "التقارير":
                 FROM payments WHERE tenant_id = ? ORDER BY due_date
             ''', (tenant_id,))
             payments = cur.fetchall()
-            # سندات القبض
             cur.execute('''
                 SELECT receipt_number, amount, receipt_date, payment_method
                 FROM receipts WHERE tenant_id = ? ORDER BY receipt_date DESC
@@ -592,7 +593,6 @@ elif menu == "التقارير":
             else:
                 st.info("لا توجد سندات")
 
-            # تصدير Excel
             if payments:
                 output = io.BytesIO()
                 with pd.ExcelWriter(output, engine='xlsxwriter') as writer:
