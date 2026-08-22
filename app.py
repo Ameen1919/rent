@@ -35,6 +35,8 @@ def ensure_columns(cur, table_name, required_columns):
                 cur.execute(f"ALTER TABLE {table_name} ADD COLUMN {col_name} INTEGER DEFAULT 0")
             elif col_name == 'tax_rate':
                 cur.execute(f"ALTER TABLE {table_name} ADD COLUMN {col_name} REAL DEFAULT 0.15")
+            elif col_name in ('attachment', 'contract_file'):
+                cur.execute(f"ALTER TABLE {table_name} ADD COLUMN {col_name} BLOB")
             else:
                 cur.execute(f"ALTER TABLE {table_name} ADD COLUMN {col_name} TEXT")
 
@@ -83,6 +85,7 @@ def init_db():
             status TEXT DEFAULT 'نشط',
             tax_included INTEGER DEFAULT 0,
             tax_rate REAL DEFAULT 0.15,
+            contract_file BLOB,
             FOREIGN KEY (tenant_id) REFERENCES tenants(id),
             FOREIGN KEY (property_id) REFERENCES properties(id)
         )
@@ -99,6 +102,7 @@ def init_db():
             paid_date TEXT,
             status TEXT DEFAULT 'مستحق',
             notes TEXT,
+            attachment BLOB,
             FOREIGN KEY (contract_id) REFERENCES contracts(id),
             FOREIGN KEY (tenant_id) REFERENCES tenants(id)
         )
@@ -115,6 +119,7 @@ def init_db():
             receipt_date TEXT,
             payment_method TEXT,
             notes TEXT,
+            attachment BLOB,
             FOREIGN KEY (tenant_id) REFERENCES tenants(id),
             FOREIGN KEY (contract_id) REFERENCES contracts(id),
             FOREIGN KEY (payment_id) REFERENCES payments(id)
@@ -144,11 +149,10 @@ def init_db():
         )
     ''')
 
-    # ✅ ترحيل: إضافة الأعمدة المفقودة في جدول payments
-    ensure_columns(cur, 'payments', ['due_date', 'paid_date'])
-
-    # ✅ ترحيل: إضافة الأعمدة المفقودة في جدول contracts
-    ensure_columns(cur, 'contracts', ['interval_months', 'tax_included', 'tax_rate'])
+    # ✅ ترحيل: إضافة الأعمدة المفقودة
+    ensure_columns(cur, 'payments', ['due_date', 'paid_date', 'attachment'])
+    ensure_columns(cur, 'contracts', ['interval_months', 'tax_included', 'tax_rate', 'contract_file'])
+    ensure_columns(cur, 'receipts', ['attachment'])
 
     # إنشاء الفهارس
     cur.execute("CREATE INDEX IF NOT EXISTS idx_payments_due_date ON payments(due_date)")
@@ -159,7 +163,6 @@ def init_db():
     conn.commit()
     conn.close()
 
-# استدعاء التهيئة
 init_db()
 
 # ---------- دوال مساعدة ----------
@@ -269,26 +272,24 @@ def load_properties():
 @st.cache_data(ttl=60)
 def load_contracts():
     conn = get_conn()
-    # الحصول على أسماء الأعمدة الفعلية في جدول contracts
     cur = conn.cursor()
     cur.execute("PRAGMA table_info(contracts)")
     columns = [col[1] for col in cur.fetchall()]
-    # بناء قائمة الأعمدة المطلوبة مع القيم الافتراضية إذا كانت مفقودة
     select_cols = []
-    for col in ['id', 'contract_number', 'start_date', 'end_date', 'rent_amount', 'interval_months', 'deposit_amount', 'status', 'tax_included', 'tax_rate']:
+    for col in ['id', 'contract_number', 'start_date', 'end_date', 'rent_amount', 'interval_months', 'deposit_amount', 'status', 'tax_included', 'tax_rate', 'contract_file']:
         if col in columns:
             select_cols.append(f"c.{col}")
         else:
-            # استخدام قيمة افتراضية بناءً على نوع العمود
             if col == 'interval_months':
                 select_cols.append("1 AS interval_months")
             elif col == 'tax_included':
                 select_cols.append("0 AS tax_included")
             elif col == 'tax_rate':
                 select_cols.append("0.15 AS tax_rate")
+            elif col == 'contract_file':
+                select_cols.append("NULL AS contract_file")
             else:
                 select_cols.append(f"NULL AS {col}")
-    # إضافة أسماء المستأجر والعقار
     query = f"""
         SELECT {', '.join(select_cols)},
                t.name as tenant, p.name as property
@@ -306,7 +307,7 @@ def load_payments(status_filter='الكل'):
     query = '''
         SELECT pay.id, t.name as tenant, p.name as property, pay.due_date,
                pay.amount, pay.paid_amount, (pay.amount - pay.paid_amount) as remaining,
-               pay.status, pay.paid_date
+               pay.status, pay.paid_date, pay.attachment
         FROM payments pay
         JOIN tenants t ON pay.tenant_id = t.id
         JOIN contracts c ON pay.contract_id = c.id
@@ -538,22 +539,26 @@ elif menu == "العقود":
                 tax_included = st.checkbox("المبلغ شامل الضريبة")
                 tax_rate = st.number_input("نسبة الضريبة (%)", min_value=0.0, value=15.0, step=1.0) / 100
                 notes = st.text_area("ملاحظات")
+                contract_file = st.file_uploader("مرفق العقد (PDF/صورة)", type=["pdf", "png", "jpg", "jpeg"])
                 submit = st.form_submit_button("حفظ وإنشاء الدفعات")
 
                 if submit:
                     if start_date >= end_date:
                         st.error("تاريخ النهاية يجب أن يكون بعد تاريخ البداية")
                     else:
+                        file_bytes = None
+                        if contract_file is not None:
+                            file_bytes = contract_file.read()
                         conn = get_conn()
                         cur = conn.cursor()
                         cur.execute('''
                             INSERT INTO contracts (tenant_id, property_id, contract_number, start_date, end_date,
                                                    rent_amount, interval_months, deposit_amount, notes,
-                                                   tax_included, tax_rate)
-                            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                                                   tax_included, tax_rate, contract_file)
+                            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                         ''', (tenant_id, property_id, contract_number, start_date.isoformat(), end_date.isoformat(),
                               rent_amount, interval_months, deposit_amount, notes,
-                              1 if tax_included else 0, tax_rate))
+                              1 if tax_included else 0, tax_rate, file_bytes))
                         contract_id = cur.lastrowid
                         conn.commit()
                         conn.close()
@@ -571,7 +576,7 @@ elif menu == "الدفعات":
         status_filter = st.selectbox("فلتر الحالة", ["الكل", "مستحق", "مدفوع", "متأخر", "جزئي"])
         df_payments = load_payments(status_filter)
         if not df_payments.empty:
-            st.dataframe(df_payments, use_container_width=True)
+            st.dataframe(df_payments.drop(columns=["attachment"]), use_container_width=True)
             payment_id = st.selectbox("اختر دفعة لتسجيل سداد", df_payments["id"].tolist())
             if payment_id:
                 conn = get_conn()
@@ -583,18 +588,22 @@ elif menu == "الدفعات":
                     amount_paid = st.number_input("المبلغ المدفوع", min_value=0.0, max_value=remaining, step=100.0)
                     pay_date = st.date_input("تاريخ السداد")
                     method = st.selectbox("طريقة السداد", ["نقدي", "تحويل بنكي", "شيك"])
+                    attachment = st.file_uploader("مرفق السداد (PDF/صورة)", type=["pdf", "png", "jpg", "jpeg"])
                     if st.form_submit_button("تسجيل"):
                         new_paid = pay[1] + amount_paid
                         status = "مدفوع" if new_paid >= pay[0] else "جزئي" if new_paid > 0 else "مستحق"
+                        file_bytes = None
+                        if attachment is not None:
+                            file_bytes = attachment.read()
                         cur.execute(
-                            "UPDATE payments SET paid_amount = ?, paid_date = ?, status = ? WHERE id = ?",
-                            (new_paid, pay_date.isoformat(), status, payment_id)
+                            "UPDATE payments SET paid_amount = ?, paid_date = ?, status = ?, attachment = ? WHERE id = ?",
+                            (new_paid, pay_date.isoformat(), status, file_bytes, payment_id)
                         )
                         receipt_number = generate_receipt_number()
                         cur.execute('''
-                            INSERT INTO receipts (receipt_number, tenant_id, contract_id, payment_id, amount, receipt_date, payment_method)
-                            VALUES (?, ?, ?, ?, ?, ?, ?)
-                        ''', (receipt_number, pay[2], pay[3], payment_id, amount_paid, pay_date.isoformat(), method))
+                            INSERT INTO receipts (receipt_number, tenant_id, contract_id, payment_id, amount, receipt_date, payment_method, attachment)
+                            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                        ''', (receipt_number, pay[2], pay[3], payment_id, amount_paid, pay_date.isoformat(), method, file_bytes))
                         conn.commit()
                         conn.close()
                         st.cache_data.clear()
@@ -618,9 +627,13 @@ elif menu == "صفحة السداد":
             payment_amount = st.number_input("المبلغ الكلي للسداد", min_value=0.0, step=100.0)
             payment_date = st.date_input("تاريخ السداد")
             method = st.selectbox("طريقة السداد", ["نقدي", "تحويل بنكي", "شيك"])
+            attachment = st.file_uploader("مرفق السداد (PDF/صورة)", type=["pdf", "png", "jpg", "jpeg"])
             submit = st.form_submit_button("تسجيل السداد")
 
             if submit and payment_amount > 0:
+                file_bytes = None
+                if attachment is not None:
+                    file_bytes = attachment.read()
                 conn = get_conn()
                 cur = conn.cursor()
                 cur.execute('''
@@ -634,9 +647,9 @@ elif menu == "صفحة السداد":
                 receipt_date = payment_date.isoformat()
                 receipt_number = generate_receipt_number()
                 cur.execute('''
-                    INSERT INTO receipts (receipt_number, tenant_id, amount, receipt_date, payment_method)
-                    VALUES (?, ?, ?, ?, ?)
-                ''', (receipt_number, tenant_id, payment_amount, receipt_date, method))
+                    INSERT INTO receipts (receipt_number, tenant_id, amount, receipt_date, payment_method, attachment)
+                    VALUES (?, ?, ?, ?, ?, ?)
+                ''', (receipt_number, tenant_id, payment_amount, receipt_date, method, file_bytes))
                 for pay in unpaid_payments:
                     if remaining_amount <= 0:
                         break
@@ -648,9 +661,9 @@ elif menu == "صفحة السداد":
                     new_paid = pay_paid + pay_amount_to_apply
                     status = "مدفوع" if new_paid >= pay_amount else "جزئي"
                     cur.execute('''
-                        UPDATE payments SET paid_amount = ?, paid_date = ?, status = ?
+                        UPDATE payments SET paid_amount = ?, paid_date = ?, status = ?, attachment = ?
                         WHERE id = ?
-                    ''', (new_paid, receipt_date, status, pay_id))
+                    ''', (new_paid, receipt_date, status, file_bytes, pay_id))
                     remaining_amount -= pay_amount_to_apply
                 conn.commit()
                 conn.close()
@@ -681,12 +694,12 @@ elif menu == "التقارير":
             cur.execute("SELECT name FROM tenants WHERE id = ?", (tenant_id,))
             tenant_name = cur.fetchone()[0]
             cur.execute('''
-                SELECT due_date, amount, paid_amount, (amount - paid_amount) as remaining, status, paid_date
+                SELECT id, due_date, amount, paid_amount, (amount - paid_amount) as remaining, status, paid_date, attachment
                 FROM payments WHERE tenant_id = ? ORDER BY due_date
             ''', (tenant_id,))
             payments = cur.fetchall()
             cur.execute('''
-                SELECT receipt_number, amount, receipt_date, payment_method
+                SELECT receipt_number, amount, receipt_date, payment_method, attachment
                 FROM receipts WHERE tenant_id = ? ORDER BY receipt_date DESC
             ''', (tenant_id,))
             receipts = cur.fetchall()
@@ -697,11 +710,24 @@ elif menu == "التقارير":
                 st.write(f"التاريخ: {gregorian_to_hijri(date.today())} هـ")
             else:
                 st.write(f"التاريخ: {date.today().isoformat()} م")
+
             if payments:
-                df = pd.DataFrame(payments, columns=["تاريخ الاستحقاق", "المبلغ", "المدفوع", "المتبقي", "الحالة", "تاريخ السداد"])
-                st.dataframe(df, use_container_width=True)
-                total_amount = sum(p[1] for p in payments)
-                total_paid = sum(p[2] for p in payments)
+                # عرض كل دفعة مع إمكانية تحميل المرفق
+                for pay in payments:
+                    pay_id, due, amount, paid, remaining, status, paid_date, attachment = pay
+                    with st.expander(f"📅 تاريخ الاستحقاق: {due} | المبلغ: {amount:,.2f} | المدفوع: {paid:,.2f} | المتبقي: {remaining:,.2f} | الحالة: {status}"):
+                        if paid > 0 and attachment is not None:
+                            st.download_button(
+                                label="تحميل مرفق السداد",
+                                data=attachment,
+                                file_name=f"payment_{pay_id}_attachment.pdf",
+                                mime="application/octet-stream"
+                            )
+                        else:
+                            st.write("لا يوجد مرفق لهذه الدفعة.")
+                # ملخص
+                total_amount = sum(p[2] for p in payments)
+                total_paid = sum(p[3] for p in payments)
                 st.write(f"**إجمالي المستحق:** {total_amount:,.2f}")
                 st.write(f"**إجمالي المدفوع:** {total_paid:,.2f}")
                 st.write(f"**المتبقي:** {total_amount - total_paid:,.2f}")
@@ -710,20 +736,34 @@ elif menu == "التقارير":
 
             st.markdown("### سندات القبض")
             if receipts:
-                df_receipts = pd.DataFrame(receipts, columns=["رقم السند", "المبلغ", "التاريخ", "الطريقة"])
-                st.dataframe(df_receipts, use_container_width=True)
+                for rec in receipts:
+                    receipt_no, amount, rec_date, method, attachment = rec
+                    with st.expander(f"🧾 سند: {receipt_no} | المبلغ: {amount:,.2f} | التاريخ: {rec_date} | الطريقة: {method}"):
+                        if attachment is not None:
+                            st.download_button(
+                                label="تحميل المرفق",
+                                data=attachment,
+                                file_name=f"receipt_{receipt_no}_attachment.pdf",
+                                mime="application/octet-stream"
+                            )
+                        else:
+                            st.write("لا يوجد مرفق.")
             else:
                 st.info("لا توجد سندات")
 
+            # تصدير Excel و PDF (مع حذف عمود المرفق من التصدير)
             if payments:
+                df_payments = pd.DataFrame([(p[1], p[2], p[3], p[2]-p[3], p[5], p[6]) for p in payments],
+                                           columns=["تاريخ الاستحقاق", "المبلغ", "المدفوع", "المتبقي", "الحالة", "تاريخ السداد"])
                 output = io.BytesIO()
                 with pd.ExcelWriter(output, engine='xlsxwriter') as writer:
-                    pd.DataFrame(payments, columns=["تاريخ الاستحقاق", "المبلغ", "المدفوع", "المتبقي", "الحالة", "تاريخ السداد"]).to_excel(writer, sheet_name='الدفعات', index=False)
+                    df_payments.to_excel(writer, sheet_name='الدفعات', index=False)
                     if receipts:
-                        pd.DataFrame(receipts, columns=["رقم السند", "المبلغ", "التاريخ", "الطريقة"]).to_excel(writer, sheet_name='سندات', index=False)
+                        df_receipts = pd.DataFrame([(r[0], r[1], r[2], r[3]) for r in receipts],
+                                                   columns=["رقم السند", "المبلغ", "التاريخ", "الطريقة"])
+                        df_receipts.to_excel(writer, sheet_name='سندات', index=False)
                 st.download_button("تحميل Excel", data=output.getvalue(), file_name=f"كشف_حساب_{tenant_name}.xlsx")
-                df_pdf = pd.DataFrame(payments, columns=["تاريخ الاستحقاق", "المبلغ", "المدفوع", "المتبقي", "الحالة", "تاريخ السداد"])
-                export_df_to_pdf(df_pdf, f"كشف حساب {tenant_name}", f"كشف_حساب_{tenant_name}.pdf")
+                export_df_to_pdf(df_payments, f"كشف حساب {tenant_name}", f"كشف_حساب_{tenant_name}.pdf")
 
     elif report_type == "الدفعات المستحقة بين تاريخين":
         st.markdown("### تقرير الدفعات المستحقة بين تاريخين")
