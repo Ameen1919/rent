@@ -383,7 +383,7 @@ with col_down:
 st.sidebar.markdown("---")
 
 # ---------- إدارة تسجيل الدخول والمستخدمين ----------
-# الحصول على قائمة المستخدمين لعرض اختيار سريع
+# الحصول على قائمة المستخدمين
 conn = get_conn()
 cur = conn.cursor()
 cur.execute("SELECT id, username, role FROM users")
@@ -391,12 +391,9 @@ users = cur.fetchall()
 conn.close()
 
 if users:
-    # نعرض قائمة اختيار المستخدم في الشريط الجانبي بدون كلمة مرور (تبسيط)
-    # في الواقع يمكن إضافة كلمة مرور، لكن للتبسيط نستخدم اختيار مباشر
     user_options = {u[1]: u[0] for u in users}
     selected_user = st.sidebar.selectbox("المستخدم الحالي", list(user_options.keys()))
     current_user_id = user_options[selected_user]
-    # جلب دور المستخدم الحالي
     conn = get_conn()
     cur = conn.cursor()
     cur.execute("SELECT role FROM users WHERE id = ?", (current_user_id,))
@@ -504,7 +501,7 @@ def load_tenants():
     conn = get_conn()
     df = pd.read_sql_query("""
         SELECT id as "الرقم", name as "الاسم", phone as "الهاتف", 
-               national_id as "الرقم القومي", address as "العنوان", region as "المنطقة"
+               national_id as "رقم الهوية / الإقامة", address as "العنوان", region as "المنطقة"
         FROM tenants
     """, conn)
     conn.close()
@@ -605,7 +602,6 @@ def load_receipts():
 def import_tenants_from_excel(uploaded_file):
     try:
         df = pd.read_excel(uploaded_file)
-        required_cols = ["الاسم"]
         if "الاسم" not in df.columns:
             st.error("يجب أن يحتوي الملف على عمود 'الاسم'")
             return
@@ -616,7 +612,7 @@ def import_tenants_from_excel(uploaded_file):
             if not name:
                 continue
             phone = str(row.get("الهاتف", "")).strip() if "الهاتف" in df.columns else ""
-            national_id = str(row.get("الرقم القومي", "")).strip() if "الرقم القومي" in df.columns else ""
+            national_id = str(row.get("رقم الهوية / الإقامة", "")).strip() if "رقم الهوية / الإقامة" in df.columns else ""
             address = str(row.get("العنوان", "")).strip() if "العنوان" in df.columns else ""
             region = str(row.get("المنطقة", "")).strip() if "المنطقة" in df.columns else ""
             notes = str(row.get("ملاحظات", "")).strip() if "ملاحظات" in df.columns else ""
@@ -635,12 +631,10 @@ def import_tenants_from_excel(uploaded_file):
 def add_user(username, password, role):
     conn = get_conn()
     cur = conn.cursor()
-    # التحقق من عدم وجود المستخدم
     cur.execute("SELECT COUNT(*) FROM users WHERE username = ?", (username,))
     if cur.fetchone()[0] > 0:
         conn.close()
         return False, "اسم المستخدم موجود مسبقاً"
-    # تشفير كلمة المرور
     password_hash = hashlib.sha256(password.encode()).hexdigest()
     cur.execute('''
         INSERT INTO users (username, password_hash, role)
@@ -740,13 +734,13 @@ elif menu == "المستأجرين":
             with col1:
                 st.write(f"**الاسم:** {tenant[1]}")
                 st.write(f"**الهاتف:** {tenant[2] or 'غير محدد'}")
-                st.write(f"**الرقم القومي:** {tenant[3] or 'غير محدد'}")
+                st.write(f"**رقم الهوية / الإقامة:** {tenant[3] or 'غير محدد'}")
                 st.write(f"**العنوان:** {tenant[4] or 'غير محدد'}")
                 st.write(f"**المنطقة:** {tenant[5] or 'غير محدد'}")
             with col2:
                 st.write(f"**ملاحظات:** {tenant[6] or 'لا يوجد'}")
 
-            # أزرار تعديل وحذف (تتطلب دور مدير)
+            # أزرار تعديل وحذف حسب الدور
             if current_role == "مدير":
                 col_edit, col_del = st.columns(2)
                 with col_edit:
@@ -768,6 +762,15 @@ elif menu == "المستأجرين":
                         else:
                             st.session_state['confirm_delete_tenant'] = tenant_id
                             st.warning("اضغط مرة أخرى لتأكيد الحذف")
+            elif current_role == "محاسب":
+                col_edit, _ = st.columns(2)
+                with col_edit:
+                    if st.button("تعديل بيانات المستأجر", key="edit_tenant_btn"):
+                        st.session_state['edit_tenant_id'] = tenant_id
+                        st.rerun()
+                st.info("لا تملك صلاحية الحذف")
+            else:  # مشاهد
+                st.info("صلاحيتك للعرض فقط")
 
             # تنبيهات
             alerts = get_unread_alerts(tenant_id)
@@ -790,83 +793,90 @@ elif menu == "المستأجرين":
             else:
                 st.write("لا توجد ملاحظات.")
 
-            # إضافة ملاحظة
-            with st.form("add_note_form"):
-                note_text = st.text_area("ملاحظة جديدة")
-                priority = st.selectbox("الأهمية", ["عادية", "متوسطة", "عالية"])
-                is_alert = st.checkbox("تنبيه")
-                if st.form_submit_button("إضافة ملاحظة"):
-                    if note_text.strip():
-                        add_note(tenant_id, note_text.strip(), priority, 1 if is_alert else 0)
-                        st.success("تمت إضافة الملاحظة")
-                        st.rerun()
+            # إضافة ملاحظة (مسموح للمدير والمحاسب)
+            if current_role in ["مدير", "محاسب"]:
+                with st.form("add_note_form"):
+                    note_text = st.text_area("ملاحظة جديدة")
+                    priority = st.selectbox("الأهمية", ["عادية", "متوسطة", "عالية"])
+                    is_alert = st.checkbox("تنبيه")
+                    if st.form_submit_button("إضافة ملاحظة"):
+                        if note_text.strip():
+                            add_note(tenant_id, note_text.strip(), priority, 1 if is_alert else 0)
+                            st.success("تمت إضافة الملاحظة")
+                            st.rerun()
             conn.close()
         else:
             st.info("لا يوجد مستأجرين بعد")
 
     with tab2:
-        # إذا كان هناك طلب تعديل
-        if 'edit_tenant_id' in st.session_state and st.session_state['edit_tenant_id']:
-            tenant_id = st.session_state['edit_tenant_id']
-            conn = get_conn()
-            cur = conn.cursor()
-            cur.execute("SELECT name, phone, national_id, address, region, notes FROM tenants WHERE id = ?", (tenant_id,))
-            tenant_data = cur.fetchone()
-            conn.close()
-            st.markdown("### تعديل بيانات المستأجر")
-            with st.form("edit_tenant_form", clear_on_submit=True):
-                name = st.text_input("الاسم *", value=tenant_data[0])
-                phone = st.text_input("الهاتف", value=tenant_data[1])
-                national_id = st.text_input("الرقم القومي", value=tenant_data[2])
-                address = st.text_input("العنوان", value=tenant_data[3])
-                region = st.text_input("المنطقة", value=tenant_data[4])
-                notes = st.text_area("ملاحظات", value=tenant_data[5])
-                submit = st.form_submit_button("حفظ التعديلات")
-                if submit:
-                    conn = get_conn()
-                    cur = conn.cursor()
-                    cur.execute('''
-                        UPDATE tenants SET name=?, phone=?, national_id=?, address=?, region=?, notes=?
-                        WHERE id=?
-                    ''', (name, phone, national_id, address, region, notes, tenant_id))
-                    conn.commit()
-                    conn.close()
-                    st.cache_data.clear()
-                    st.success("تم تحديث بيانات المستأجر")
-                    st.session_state['edit_tenant_id'] = None
-                    st.rerun()
+        if current_role == "مشاهد":
+            st.warning("لا تملك صلاحية الإضافة أو التعديل")
         else:
-            with st.form("add_tenant_form", clear_on_submit=True):
-                name = st.text_input("الاسم *")
-                phone = st.text_input("الهاتف")
-                national_id = st.text_input("الرقم القومي")
-                address = st.text_input("العنوان")
-                region = st.text_input("المنطقة")
-                notes = st.text_area("ملاحظات")
-                submit = st.form_submit_button("حفظ")
-                if submit:
-                    if name.strip():
+            # إذا كان هناك طلب تعديل
+            if 'edit_tenant_id' in st.session_state and st.session_state['edit_tenant_id']:
+                tenant_id = st.session_state['edit_tenant_id']
+                conn = get_conn()
+                cur = conn.cursor()
+                cur.execute("SELECT name, phone, national_id, address, region, notes FROM tenants WHERE id = ?", (tenant_id,))
+                tenant_data = cur.fetchone()
+                conn.close()
+                st.markdown("### تعديل بيانات المستأجر")
+                with st.form("edit_tenant_form", clear_on_submit=True):
+                    name = st.text_input("الاسم *", value=tenant_data[0])
+                    phone = st.text_input("الهاتف", value=tenant_data[1])
+                    national_id = st.text_input("رقم الهوية / الإقامة", value=tenant_data[2])
+                    address = st.text_input("العنوان", value=tenant_data[3])
+                    region = st.text_input("المنطقة", value=tenant_data[4])
+                    notes = st.text_area("ملاحظات", value=tenant_data[5])
+                    submit = st.form_submit_button("حفظ التعديلات")
+                    if submit:
                         conn = get_conn()
                         cur = conn.cursor()
                         cur.execute('''
-                            INSERT INTO tenants (name, phone, national_id, address, region, notes)
-                            VALUES (?, ?, ?, ?, ?, ?)
-                        ''', (name, phone, national_id, address, region, notes))
+                            UPDATE tenants SET name=?, phone=?, national_id=?, address=?, region=?, notes=?
+                            WHERE id=?
+                        ''', (name, phone, national_id, address, region, notes, tenant_id))
                         conn.commit()
                         conn.close()
                         st.cache_data.clear()
-                        st.success("تمت إضافة المستأجر")
+                        st.success("تم تحديث بيانات المستأجر")
+                        st.session_state['edit_tenant_id'] = None
                         st.rerun()
-                    else:
-                        st.error("الاسم مطلوب")
+            else:
+                with st.form("add_tenant_form", clear_on_submit=True):
+                    name = st.text_input("الاسم *")
+                    phone = st.text_input("الهاتف")
+                    national_id = st.text_input("رقم الهوية / الإقامة")
+                    address = st.text_input("العنوان")
+                    region = st.text_input("المنطقة")
+                    notes = st.text_area("ملاحظات")
+                    submit = st.form_submit_button("حفظ")
+                    if submit:
+                        if name.strip():
+                            conn = get_conn()
+                            cur = conn.cursor()
+                            cur.execute('''
+                                INSERT INTO tenants (name, phone, national_id, address, region, notes)
+                                VALUES (?, ?, ?, ?, ?, ?)
+                            ''', (name, phone, national_id, address, region, notes))
+                            conn.commit()
+                            conn.close()
+                            st.cache_data.clear()
+                            st.success("تمت إضافة المستأجر")
+                            st.rerun()
+                        else:
+                            st.error("الاسم مطلوب")
 
     with tab3:
-        st.markdown("### استيراد المستأجرين من ملف Excel")
-        st.info("يجب أن يحتوي الملف على الأعمدة التالية: الاسم (إجباري)، الهاتف، الرقم القومي، العنوان، المنطقة، ملاحظات")
-        uploaded_file = st.file_uploader("اختر ملف Excel", type=["xlsx", "xls"])
-        if uploaded_file is not None:
-            if st.button("بدء الاستيراد"):
-                import_tenants_from_excel(uploaded_file)
+        if current_role == "مشاهد":
+            st.warning("لا تملك صلاحية الاستيراد")
+        else:
+            st.markdown("### استيراد المستأجرين من ملف Excel")
+            st.info("يجب أن يحتوي الملف على الأعمدة التالية: الاسم (إجباري)، الهاتف، رقم الهوية / الإقامة، العنوان، المنطقة، ملاحظات")
+            uploaded_file = st.file_uploader("اختر ملف Excel", type=["xlsx", "xls"])
+            if uploaded_file is not None:
+                if st.button("بدء الاستيراد"):
+                    import_tenants_from_excel(uploaded_file)
 
 # ================== العقارات ==================
 elif menu == "العقارات":
@@ -877,7 +887,6 @@ elif menu == "العقارات":
         df_props = load_properties()
         if not df_props.empty:
             display_dataframe_with_reorder(df_props, "properties")
-            # تعديل وحذف عقار (مدير فقط)
             if current_role == "مدير":
                 prop_id = st.selectbox("اختر عقار", df_props["الرقم"], format_func=lambda x: df_props[df_props["الرقم"]==x]["الاسم"].iloc[0])
                 col_edit, col_del = st.columns(2)
@@ -900,61 +909,71 @@ elif menu == "العقارات":
                         else:
                             st.session_state['confirm_delete_property'] = prop_id
                             st.warning("اضغط مرة أخرى لتأكيد الحذف")
+            elif current_role == "محاسب":
+                prop_id = st.selectbox("اختر عقار للتعديل", df_props["الرقم"], format_func=lambda x: df_props[df_props["الرقم"]==x]["الاسم"].iloc[0])
+                if st.button("تعديل العقار", key="edit_prop_btn"):
+                    st.session_state['edit_property_id'] = prop_id
+                    st.rerun()
+            else:
+                st.info("صلاحيتك للعرض فقط")
         else:
             st.info("لا توجد عقارات")
 
     with tab2:
-        if 'edit_property_id' in st.session_state and st.session_state['edit_property_id']:
-            prop_id = st.session_state['edit_property_id']
-            conn = get_conn()
-            cur = conn.cursor()
-            cur.execute("SELECT name, description, address, region, area FROM properties WHERE id = ?", (prop_id,))
-            prop_data = cur.fetchone()
-            conn.close()
-            st.markdown("### تعديل عقار")
-            with st.form("edit_property_form", clear_on_submit=True):
-                name = st.text_input("اسم العقار *", value=prop_data[0])
-                description = st.text_area("الوصف", value=prop_data[1])
-                address = st.text_input("العنوان", value=prop_data[2])
-                region = st.text_input("المنطقة", value=prop_data[3])
-                area = st.text_input("المساحة", value=prop_data[4])
-                submit = st.form_submit_button("حفظ التعديلات")
-                if submit:
-                    conn = get_conn()
-                    cur = conn.cursor()
-                    cur.execute('''
-                        UPDATE properties SET name=?, description=?, address=?, region=?, area=?
-                        WHERE id=?
-                    ''', (name, description, address, region, area, prop_id))
-                    conn.commit()
-                    conn.close()
-                    st.cache_data.clear()
-                    st.success("تم تحديث العقار")
-                    st.session_state['edit_property_id'] = None
-                    st.rerun()
+        if current_role == "مشاهد":
+            st.warning("لا تملك صلاحية الإضافة أو التعديل")
         else:
-            with st.form("add_property_form", clear_on_submit=True):
-                name = st.text_input("اسم العقار *")
-                description = st.text_area("الوصف")
-                address = st.text_input("العنوان")
-                region = st.text_input("المنطقة")
-                area = st.text_input("المساحة")
-                submit = st.form_submit_button("حفظ")
-                if submit:
-                    if name.strip():
+            if 'edit_property_id' in st.session_state and st.session_state['edit_property_id']:
+                prop_id = st.session_state['edit_property_id']
+                conn = get_conn()
+                cur = conn.cursor()
+                cur.execute("SELECT name, description, address, region, area FROM properties WHERE id = ?", (prop_id,))
+                prop_data = cur.fetchone()
+                conn.close()
+                st.markdown("### تعديل عقار")
+                with st.form("edit_property_form", clear_on_submit=True):
+                    name = st.text_input("اسم العقار *", value=prop_data[0])
+                    description = st.text_area("الوصف", value=prop_data[1])
+                    address = st.text_input("العنوان", value=prop_data[2])
+                    region = st.text_input("المنطقة", value=prop_data[3])
+                    area = st.text_input("المساحة", value=prop_data[4])
+                    submit = st.form_submit_button("حفظ التعديلات")
+                    if submit:
                         conn = get_conn()
                         cur = conn.cursor()
                         cur.execute('''
-                            INSERT INTO properties (name, description, address, region, area)
-                            VALUES (?, ?, ?, ?, ?)
-                        ''', (name, description, address, region, area))
+                            UPDATE properties SET name=?, description=?, address=?, region=?, area=?
+                            WHERE id=?
+                        ''', (name, description, address, region, area, prop_id))
                         conn.commit()
                         conn.close()
                         st.cache_data.clear()
-                        st.success("تمت إضافة العقار")
+                        st.success("تم تحديث العقار")
+                        st.session_state['edit_property_id'] = None
                         st.rerun()
-                    else:
-                        st.error("الاسم مطلوب")
+            else:
+                with st.form("add_property_form", clear_on_submit=True):
+                    name = st.text_input("اسم العقار *")
+                    description = st.text_area("الوصف")
+                    address = st.text_input("العنوان")
+                    region = st.text_input("المنطقة")
+                    area = st.text_input("المساحة")
+                    submit = st.form_submit_button("حفظ")
+                    if submit:
+                        if name.strip():
+                            conn = get_conn()
+                            cur = conn.cursor()
+                            cur.execute('''
+                                INSERT INTO properties (name, description, address, region, area)
+                                VALUES (?, ?, ?, ?, ?)
+                            ''', (name, description, address, region, area))
+                            conn.commit()
+                            conn.close()
+                            st.cache_data.clear()
+                            st.success("تمت إضافة العقار")
+                            st.rerun()
+                        else:
+                            st.error("الاسم مطلوب")
 
 # ================== العقود ==================
 elif menu == "العقود":
@@ -987,98 +1006,108 @@ elif menu == "العقود":
                         else:
                             st.session_state['confirm_delete_contract'] = contract_id
                             st.warning("اضغط مرة أخرى لتأكيد الحذف")
+            elif current_role == "محاسب":
+                contract_id = st.selectbox("اختر عقد للتعديل", df_contracts["الرقم"], format_func=lambda x: f"عقد رقم {x}")
+                if st.button("تعديل العقد", key="edit_contract_btn"):
+                    st.session_state['edit_contract_id'] = contract_id
+                    st.rerun()
+            else:
+                st.info("صلاحيتك للعرض فقط")
         else:
             st.info("لا توجد عقود")
 
     with tab2:
-        df_tenants = load_tenants()
-        df_props = load_properties()
-        if df_tenants.empty or df_props.empty:
-            st.warning("يجب إضافة مستأجر وعقار أولاً")
+        if current_role == "مشاهد":
+            st.warning("لا تملك صلاحية الإضافة أو التعديل")
         else:
-            if 'edit_contract_id' in st.session_state and st.session_state['edit_contract_id']:
-                contract_id = st.session_state['edit_contract_id']
-                conn = get_conn()
-                cur = conn.cursor()
-                cur.execute('''
-                    SELECT tenant_id, property_id, contract_number, start_date, end_date,
-                           rent_amount, interval_months, deposit_amount, tax_included, tax_rate, notes
-                    FROM contracts WHERE id = ?
-                ''', (contract_id,))
-                contract_data = cur.fetchone()
-                conn.close()
-                st.markdown("### تعديل العقد")
-                with st.form("edit_contract_form", clear_on_submit=True):
-                    tenant_id = st.selectbox("المستأجر", df_tenants["الرقم"],
-                                             index=df_tenants.index[df_tenants["الرقم"] == contract_data[0]][0],
-                                             format_func=lambda x: df_tenants[df_tenants["الرقم"]==x]["الاسم"].iloc[0])
-                    property_id = st.selectbox("العقار", df_props["الرقم"],
-                                               index=df_props.index[df_props["الرقم"] == contract_data[1]][0],
-                                               format_func=lambda x: df_props[df_props["الرقم"]==x]["الاسم"].iloc[0])
-                    contract_number = st.text_input("رقم العقد", value=contract_data[2])
-                    start_date = st.date_input("تاريخ البداية", value=date.fromisoformat(contract_data[3]))
-                    end_date = st.date_input("تاريخ النهاية", value=date.fromisoformat(contract_data[4]))
-                    rent_amount = st.number_input("قيمة الإيجار", min_value=0.0, step=100.0, value=float(contract_data[5]))
-                    interval_months = st.number_input("دورية السداد (عدد الشهور)", min_value=1, value=int(contract_data[6]))
-                    deposit_amount = st.number_input("التأمين", min_value=0.0, step=100.0, value=float(contract_data[7]))
-                    tax_included = st.checkbox("المبلغ شامل الضريبة", value=bool(contract_data[8]))
-                    tax_rate = st.number_input("نسبة الضريبة (%)", min_value=0.0, value=float(contract_data[9])*100, step=1.0) / 100
-                    notes = st.text_area("ملاحظات", value=contract_data[10])
-                    submit = st.form_submit_button("حفظ التعديلات")
-                    if submit:
-                        conn = get_conn()
-                        cur = conn.cursor()
-                        cur.execute('''
-                            UPDATE contracts SET tenant_id=?, property_id=?, contract_number=?, start_date=?, end_date=?,
-                                   rent_amount=?, interval_months=?, deposit_amount=?, tax_included=?, tax_rate=?, notes=?
-                            WHERE id=?
-                        ''', (tenant_id, property_id, contract_number, start_date.isoformat(), end_date.isoformat(),
-                              rent_amount, interval_months, deposit_amount, 1 if tax_included else 0, tax_rate, notes, contract_id))
-                        conn.commit()
-                        conn.close()
-                        st.cache_data.clear()
-                        st.success("تم تحديث العقد")
-                        st.session_state['edit_contract_id'] = None
-                        st.rerun()
+            df_tenants = load_tenants()
+            df_props = load_properties()
+            if df_tenants.empty or df_props.empty:
+                st.warning("يجب إضافة مستأجر وعقار أولاً")
             else:
-                with st.form("add_contract_form", clear_on_submit=True):
-                    tenant_id = st.selectbox("المستأجر", df_tenants["الرقم"], format_func=lambda x: df_tenants[df_tenants["الرقم"]==x]["الاسم"].iloc[0])
-                    property_id = st.selectbox("العقار", df_props["الرقم"], format_func=lambda x: df_props[df_props["الرقم"]==x]["الاسم"].iloc[0])
-                    contract_number = st.text_input("رقم العقد")
-                    start_date = st.date_input("تاريخ البداية")
-                    end_date = st.date_input("تاريخ النهاية", value=start_date + relativedelta(years=1))
-                    rent_amount = st.number_input("قيمة الإيجار", min_value=0.0, step=100.0)
-                    interval_months = st.number_input("دورية السداد (عدد الشهور)", min_value=1, value=1)
-                    deposit_amount = st.number_input("التأمين", min_value=0.0, step=100.0)
-                    tax_included = st.checkbox("المبلغ شامل الضريبة")
-                    tax_rate = st.number_input("نسبة الضريبة (%)", min_value=0.0, value=15.0, step=1.0) / 100
-                    notes = st.text_area("ملاحظات")
-                    contract_file = st.file_uploader("مرفق العقد (PDF/صورة)", type=["pdf", "png", "jpg", "jpeg"])
-                    submit = st.form_submit_button("حفظ وإنشاء الدفعات")
-                    if submit:
-                        if start_date >= end_date:
-                            st.error("تاريخ النهاية يجب أن يكون بعد تاريخ البداية")
-                        else:
-                            file_bytes = None
-                            if contract_file is not None:
-                                file_bytes = contract_file.read()
+                if 'edit_contract_id' in st.session_state and st.session_state['edit_contract_id']:
+                    contract_id = st.session_state['edit_contract_id']
+                    conn = get_conn()
+                    cur = conn.cursor()
+                    cur.execute('''
+                        SELECT tenant_id, property_id, contract_number, start_date, end_date,
+                               rent_amount, interval_months, deposit_amount, tax_included, tax_rate, notes
+                        FROM contracts WHERE id = ?
+                    ''', (contract_id,))
+                    contract_data = cur.fetchone()
+                    conn.close()
+                    st.markdown("### تعديل العقد")
+                    with st.form("edit_contract_form", clear_on_submit=True):
+                        tenant_id = st.selectbox("المستأجر", df_tenants["الرقم"],
+                                                 index=df_tenants.index[df_tenants["الرقم"] == contract_data[0]][0],
+                                                 format_func=lambda x: df_tenants[df_tenants["الرقم"]==x]["الاسم"].iloc[0])
+                        property_id = st.selectbox("العقار", df_props["الرقم"],
+                                                   index=df_props.index[df_props["الرقم"] == contract_data[1]][0],
+                                                   format_func=lambda x: df_props[df_props["الرقم"]==x]["الاسم"].iloc[0])
+                        contract_number = st.text_input("رقم العقد", value=contract_data[2])
+                        start_date = st.date_input("تاريخ البداية", value=date.fromisoformat(contract_data[3]))
+                        end_date = st.date_input("تاريخ النهاية", value=date.fromisoformat(contract_data[4]))
+                        rent_amount = st.number_input("قيمة الإيجار", min_value=0.0, step=100.0, value=float(contract_data[5]))
+                        interval_months = st.number_input("دورية السداد (عدد الشهور)", min_value=1, value=int(contract_data[6]))
+                        deposit_amount = st.number_input("التأمين", min_value=0.0, step=100.0, value=float(contract_data[7]))
+                        tax_included = st.checkbox("المبلغ شامل الضريبة", value=bool(contract_data[8]))
+                        tax_rate = st.number_input("نسبة الضريبة (%)", min_value=0.0, value=float(contract_data[9])*100, step=1.0) / 100
+                        notes = st.text_area("ملاحظات", value=contract_data[10])
+                        submit = st.form_submit_button("حفظ التعديلات")
+                        if submit:
                             conn = get_conn()
                             cur = conn.cursor()
                             cur.execute('''
-                                INSERT INTO contracts (tenant_id, property_id, contract_number, start_date, end_date,
-                                                       rent_amount, interval_months, deposit_amount, notes,
-                                                       tax_included, tax_rate, contract_file)
-                                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                                UPDATE contracts SET tenant_id=?, property_id=?, contract_number=?, start_date=?, end_date=?,
+                                       rent_amount=?, interval_months=?, deposit_amount=?, tax_included=?, tax_rate=?, notes=?
+                                WHERE id=?
                             ''', (tenant_id, property_id, contract_number, start_date.isoformat(), end_date.isoformat(),
-                                  rent_amount, interval_months, deposit_amount, notes,
-                                  1 if tax_included else 0, tax_rate, file_bytes))
-                            contract_id = cur.lastrowid
+                                  rent_amount, interval_months, deposit_amount, 1 if tax_included else 0, tax_rate, notes, contract_id))
                             conn.commit()
                             conn.close()
-                            create_payment_schedule(contract_id, tenant_id, start_date, end_date, rent_amount, interval_months)
                             st.cache_data.clear()
-                            st.success("تم إنشاء العقد وجدولة الدفعات")
+                            st.success("تم تحديث العقد")
+                            st.session_state['edit_contract_id'] = None
                             st.rerun()
+                else:
+                    with st.form("add_contract_form", clear_on_submit=True):
+                        tenant_id = st.selectbox("المستأجر", df_tenants["الرقم"], format_func=lambda x: df_tenants[df_tenants["الرقم"]==x]["الاسم"].iloc[0])
+                        property_id = st.selectbox("العقار", df_props["الرقم"], format_func=lambda x: df_props[df_props["الرقم"]==x]["الاسم"].iloc[0])
+                        contract_number = st.text_input("رقم العقد")
+                        start_date = st.date_input("تاريخ البداية")
+                        end_date = st.date_input("تاريخ النهاية", value=start_date + relativedelta(years=1))
+                        rent_amount = st.number_input("قيمة الإيجار", min_value=0.0, step=100.0)
+                        interval_months = st.number_input("دورية السداد (عدد الشهور)", min_value=1, value=1)
+                        deposit_amount = st.number_input("التأمين", min_value=0.0, step=100.0)
+                        tax_included = st.checkbox("المبلغ شامل الضريبة")
+                        tax_rate = st.number_input("نسبة الضريبة (%)", min_value=0.0, value=15.0, step=1.0) / 100
+                        notes = st.text_area("ملاحظات")
+                        contract_file = st.file_uploader("مرفق العقد (PDF/صورة)", type=["pdf", "png", "jpg", "jpeg"])
+                        submit = st.form_submit_button("حفظ وإنشاء الدفعات")
+                        if submit:
+                            if start_date >= end_date:
+                                st.error("تاريخ النهاية يجب أن يكون بعد تاريخ البداية")
+                            else:
+                                file_bytes = None
+                                if contract_file is not None:
+                                    file_bytes = contract_file.read()
+                                conn = get_conn()
+                                cur = conn.cursor()
+                                cur.execute('''
+                                    INSERT INTO contracts (tenant_id, property_id, contract_number, start_date, end_date,
+                                                           rent_amount, interval_months, deposit_amount, notes,
+                                                           tax_included, tax_rate, contract_file)
+                                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                                ''', (tenant_id, property_id, contract_number, start_date.isoformat(), end_date.isoformat(),
+                                      rent_amount, interval_months, deposit_amount, notes,
+                                      1 if tax_included else 0, tax_rate, file_bytes))
+                                contract_id = cur.lastrowid
+                                conn.commit()
+                                conn.close()
+                                create_payment_schedule(contract_id, tenant_id, start_date, end_date, rent_amount, interval_months)
+                                st.cache_data.clear()
+                                st.success("تم إنشاء العقد وجدولة الدفعات")
+                                st.rerun()
 
 # ================== الدفعات ==================
 elif menu == "الدفعات":
@@ -1090,99 +1119,108 @@ elif menu == "الدفعات":
         df_payments = load_payments(status_filter)
         if not df_payments.empty:
             display_dataframe_with_reorder(df_payments.drop(columns=["المرفق"]), "payments")
-            payment_id = st.selectbox("اختر دفعة لتسجيل سداد", df_payments["الرقم"].tolist())
-            if payment_id:
-                conn = get_conn()
-                cur = conn.cursor()
-                cur.execute("SELECT amount, paid_amount, tenant_id, contract_id FROM payments WHERE id = ?", (payment_id,))
-                pay = cur.fetchone()
-                remaining = pay[0] - pay[1]
-                with st.form("pay_form"):
-                    amount_paid = st.number_input("المبلغ المدفوع", min_value=0.0, max_value=remaining, step=100.0)
-                    pay_date = st.date_input("تاريخ السداد")
-                    method = st.selectbox("طريقة السداد", ["نقدي", "تحويل بنكي", "شيك"])
-                    attachment = st.file_uploader("مرفق السداد (PDF/صورة)", type=["pdf", "png", "jpg", "jpeg"])
-                    if st.form_submit_button("تسجيل"):
-                        new_paid = pay[1] + amount_paid
-                        status = "مدفوع" if new_paid >= pay[0] else "جزئي" if new_paid > 0 else "مستحق"
-                        file_bytes = None
-                        if attachment is not None:
-                            file_bytes = attachment.read()
-                        cur.execute(
-                            "UPDATE payments SET paid_amount = ?, paid_date = ?, status = ?, attachment = ? WHERE id = ?",
-                            (new_paid, pay_date.isoformat(), status, file_bytes, payment_id)
-                        )
-                        receipt_number = generate_receipt_number()
-                        cur.execute('''
-                            INSERT INTO receipts (receipt_number, tenant_id, contract_id, payment_id, amount, receipt_date, payment_method, attachment)
-                            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-                        ''', (receipt_number, pay[2], pay[3], payment_id, amount_paid, pay_date.isoformat(), method, file_bytes))
-                        conn.commit()
-                        conn.close()
-                        st.cache_data.clear()
-                        st.success("تم تسجيل السداد")
-                        st.rerun()
+            if current_role in ["مدير", "محاسب"]:
+                payment_id = st.selectbox("اختر دفعة لتسجيل سداد", df_payments["الرقم"].tolist())
+                if payment_id:
+                    conn = get_conn()
+                    cur = conn.cursor()
+                    cur.execute("SELECT amount, paid_amount, tenant_id, contract_id FROM payments WHERE id = ?", (payment_id,))
+                    pay = cur.fetchone()
+                    remaining = pay[0] - pay[1]
+                    with st.form("pay_form"):
+                        amount_paid = st.number_input("المبلغ المدفوع", min_value=0.0, max_value=remaining, step=100.0)
+                        pay_date = st.date_input("تاريخ السداد")
+                        method = st.selectbox("طريقة السداد", ["نقدي", "تحويل بنكي", "شيك"])
+                        attachment = st.file_uploader("مرفق السداد (PDF/صورة)", type=["pdf", "png", "jpg", "jpeg"])
+                        if st.form_submit_button("تسجيل"):
+                            new_paid = pay[1] + amount_paid
+                            status = "مدفوع" if new_paid >= pay[0] else "جزئي" if new_paid > 0 else "مستحق"
+                            file_bytes = None
+                            if attachment is not None:
+                                file_bytes = attachment.read()
+                            cur.execute(
+                                "UPDATE payments SET paid_amount = ?, paid_date = ?, status = ?, attachment = ? WHERE id = ?",
+                                (new_paid, pay_date.isoformat(), status, file_bytes, payment_id)
+                            )
+                            receipt_number = generate_receipt_number()
+                            cur.execute('''
+                                INSERT INTO receipts (receipt_number, tenant_id, contract_id, payment_id, amount, receipt_date, payment_method, attachment)
+                                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                            ''', (receipt_number, pay[2], pay[3], payment_id, amount_paid, pay_date.isoformat(), method, file_bytes))
+                            conn.commit()
+                            conn.close()
+                            st.cache_data.clear()
+                            st.success("تم تسجيل السداد")
+                            st.rerun()
+            else:
+                st.info("صلاحيتك للعرض فقط")
         else:
             st.info("لا توجد دفعات مطابقة")
 
     with tab2:
-        st.info("استخدم تبويب 'الدفعات المستحقة' لاختيار دفعة وتسجيل سداد.")
+        if current_role in ["مدير", "محاسب"]:
+            st.info("استخدم تبويب 'الدفعات المستحقة' لاختيار دفعة وتسجيل سداد.")
+        else:
+            st.info("لا تملك صلاحية تسجيل الدفعات")
 
 # ================== صفحة السداد ==================
 elif menu == "صفحة السداد":
     st.subheader("💳 صفحة السداد السريع")
-    df_tenants = load_tenants()
-    if df_tenants.empty:
-        st.warning("لا يوجد مستأجرين")
-    else:
-        with st.form("quick_payment_form"):
-            tenant_id = st.selectbox("اختر المستأجر", df_tenants["الرقم"], format_func=lambda x: df_tenants[df_tenants["الرقم"]==x]["الاسم"].iloc[0])
-            payment_amount = st.number_input("المبلغ الكلي للسداد", min_value=0.0, step=100.0)
-            payment_date = st.date_input("تاريخ السداد")
-            method = st.selectbox("طريقة السداد", ["نقدي", "تحويل بنكي", "شيك"])
-            attachment = st.file_uploader("مرفق السداد (PDF/صورة)", type=["pdf", "png", "jpg", "jpeg"])
-            submit = st.form_submit_button("تسجيل السداد")
+    if current_role in ["مدير", "محاسب"]:
+        df_tenants = load_tenants()
+        if df_tenants.empty:
+            st.warning("لا يوجد مستأجرين")
+        else:
+            with st.form("quick_payment_form"):
+                tenant_id = st.selectbox("اختر المستأجر", df_tenants["الرقم"], format_func=lambda x: df_tenants[df_tenants["الرقم"]==x]["الاسم"].iloc[0])
+                payment_amount = st.number_input("المبلغ الكلي للسداد", min_value=0.0, step=100.0)
+                payment_date = st.date_input("تاريخ السداد")
+                method = st.selectbox("طريقة السداد", ["نقدي", "تحويل بنكي", "شيك"])
+                attachment = st.file_uploader("مرفق السداد (PDF/صورة)", type=["pdf", "png", "jpg", "jpeg"])
+                submit = st.form_submit_button("تسجيل السداد")
 
-            if submit and payment_amount > 0:
-                file_bytes = None
-                if attachment is not None:
-                    file_bytes = attachment.read()
-                conn = get_conn()
-                cur = conn.cursor()
-                cur.execute('''
-                    SELECT id, amount, paid_amount, contract_id
-                    FROM payments
-                    WHERE tenant_id = ? AND status != 'مدفوع'
-                    ORDER BY due_date ASC
-                ''', (tenant_id,))
-                unpaid_payments = cur.fetchall()
-                remaining_amount = payment_amount
-                receipt_date = payment_date.isoformat()
-                receipt_number = generate_receipt_number()
-                cur.execute('''
-                    INSERT INTO receipts (receipt_number, tenant_id, amount, receipt_date, payment_method, attachment)
-                    VALUES (?, ?, ?, ?, ?, ?)
-                ''', (receipt_number, tenant_id, payment_amount, receipt_date, method, file_bytes))
-                for pay in unpaid_payments:
-                    if remaining_amount <= 0:
-                        break
-                    pay_id, pay_amount, pay_paid, contract_id = pay
-                    due = pay_amount - pay_paid
-                    if due <= 0:
-                        continue
-                    pay_amount_to_apply = min(due, remaining_amount)
-                    new_paid = pay_paid + pay_amount_to_apply
-                    status = "مدفوع" if new_paid >= pay_amount else "جزئي"
+                if submit and payment_amount > 0:
+                    file_bytes = None
+                    if attachment is not None:
+                        file_bytes = attachment.read()
+                    conn = get_conn()
+                    cur = conn.cursor()
                     cur.execute('''
-                        UPDATE payments SET paid_amount = ?, paid_date = ?, status = ?, attachment = ?
-                        WHERE id = ?
-                    ''', (new_paid, receipt_date, status, file_bytes, pay_id))
-                    remaining_amount -= pay_amount_to_apply
-                conn.commit()
-                conn.close()
-                st.cache_data.clear()
-                st.success(f"تم تسجيل سداد بمبلغ {payment_amount:,.2f} للمستأجر")
-                st.rerun()
+                        SELECT id, amount, paid_amount, contract_id
+                        FROM payments
+                        WHERE tenant_id = ? AND status != 'مدفوع'
+                        ORDER BY due_date ASC
+                    ''', (tenant_id,))
+                    unpaid_payments = cur.fetchall()
+                    remaining_amount = payment_amount
+                    receipt_date = payment_date.isoformat()
+                    receipt_number = generate_receipt_number()
+                    cur.execute('''
+                        INSERT INTO receipts (receipt_number, tenant_id, amount, receipt_date, payment_method, attachment)
+                        VALUES (?, ?, ?, ?, ?, ?)
+                    ''', (receipt_number, tenant_id, payment_amount, receipt_date, method, file_bytes))
+                    for pay in unpaid_payments:
+                        if remaining_amount <= 0:
+                            break
+                        pay_id, pay_amount, pay_paid, contract_id = pay
+                        due = pay_amount - pay_paid
+                        if due <= 0:
+                            continue
+                        pay_amount_to_apply = min(due, remaining_amount)
+                        new_paid = pay_paid + pay_amount_to_apply
+                        status = "مدفوع" if new_paid >= pay_amount else "جزئي"
+                        cur.execute('''
+                            UPDATE payments SET paid_amount = ?, paid_date = ?, status = ?, attachment = ?
+                            WHERE id = ?
+                        ''', (new_paid, receipt_date, status, file_bytes, pay_id))
+                        remaining_amount -= pay_amount_to_apply
+                    conn.commit()
+                    conn.close()
+                    st.cache_data.clear()
+                    st.success(f"تم تسجيل سداد بمبلغ {payment_amount:,.2f} للمستأجر")
+                    st.rerun()
+    else:
+        st.warning("لا تملك صلاحية تسجيل السداد")
 
 # ================== التقارير ==================
 elif menu == "التقارير":
@@ -1470,87 +1508,91 @@ elif menu == "التقارير":
 # ================== المستخدمون ==================
 elif menu == "المستخدمون":
     st.subheader("👤 إدارة المستخدمين والصلاحيات")
-    tab1, tab2 = st.tabs(["عرض المستخدمين", "إضافة مستخدم"])
+    if current_role != "مدير":
+        st.error("لا تملك صلاحية الوصول لهذه الصفحة")
+    else:
+        tab1, tab2 = st.tabs(["عرض المستخدمين", "إضافة مستخدم"])
 
-    with tab1:
-        df_users = load_users()
-        if not df_users.empty:
-            st.dataframe(df_users, use_container_width=True)
-            # تعديل دور مستخدم
-            user_id = st.selectbox("اختر مستخدم لتعديل دوره", df_users["الرقم"], format_func=lambda x: df_users[df_users["الرقم"]==x]["اسم المستخدم"].iloc[0])
-            if user_id:
-                current_role = df_users[df_users["الرقم"]==user_id]["الدور"].iloc[0]
-                new_role = st.selectbox("الدور الجديد", ["مدير", "محاسب", "مشاهد"], index=["مدير", "محاسب", "مشاهد"].index(current_role))
-                if st.button("تحديث الدور"):
-                    update_user_role(user_id, new_role)
-                    st.success("تم تحديث الدور بنجاح")
-                    st.rerun()
-                # حذف مستخدم (لا يمكن حذف آخر مدير)
-                if current_role == "مدير" and len(df_users[df_users["الدور"]=="مدير"]) <= 1:
-                    st.warning("لا يمكن حذف آخر مدير")
-                else:
-                    if st.button("حذف المستخدم"):
-                        delete_user(user_id)
-                        st.success("تم حذف المستخدم")
+        with tab1:
+            df_users = load_users()
+            if not df_users.empty:
+                st.dataframe(df_users, use_container_width=True)
+                user_id = st.selectbox("اختر مستخدم لتعديل دوره", df_users["الرقم"], format_func=lambda x: df_users[df_users["الرقم"]==x]["اسم المستخدم"].iloc[0])
+                if user_id:
+                    current_role_user = df_users[df_users["الرقم"]==user_id]["الدور"].iloc[0]
+                    new_role = st.selectbox("الدور الجديد", ["مدير", "محاسب", "مشاهد"], index=["مدير", "محاسب", "مشاهد"].index(current_role_user))
+                    if st.button("تحديث الدور"):
+                        update_user_role(user_id, new_role)
+                        st.success("تم تحديث الدور بنجاح")
                         st.rerun()
-        else:
-            st.info("لا يوجد مستخدمين")
-
-    with tab2:
-        with st.form("add_user_form"):
-            username = st.text_input("اسم المستخدم *")
-            password = st.text_input("كلمة المرور *", type="password")
-            role = st.selectbox("الدور", ["مدير", "محاسب", "مشاهد"])
-            submit = st.form_submit_button("إضافة مستخدم")
-            if submit:
-                if username.strip() and password.strip():
-                    success, message = add_user(username, password, role)
-                    if success:
-                        st.success(message)
-                        st.rerun()
+                    # حذف مستخدم (لا يمكن حذف آخر مدير)
+                    if current_role_user == "مدير" and len(df_users[df_users["الدور"]=="مدير"]) <= 1:
+                        st.warning("لا يمكن حذف آخر مدير")
                     else:
-                        st.error(message)
-                else:
-                    st.error("يجب إدخال اسم المستخدم وكلمة المرور")
+                        if st.button("حذف المستخدم"):
+                            delete_user(user_id)
+                            st.success("تم حذف المستخدم")
+                            st.rerun()
+            else:
+                st.info("لا يوجد مستخدمين")
+
+        with tab2:
+            with st.form("add_user_form"):
+                username = st.text_input("اسم المستخدم *")
+                password = st.text_input("كلمة المرور *", type="password")
+                role = st.selectbox("الدور", ["مدير", "محاسب", "مشاهد"])
+                submit = st.form_submit_button("إضافة مستخدم")
+                if submit:
+                    if username.strip() and password.strip():
+                        success, message = add_user(username, password, role)
+                        if success:
+                            st.success(message)
+                            st.rerun()
+                        else:
+                            st.error(message)
+                    else:
+                        st.error("يجب إدخال اسم المستخدم وكلمة المرور")
 
 # ================== الإعدادات ==================
 elif menu == "الإعدادات":
     st.subheader("⚙️ الإعدادات")
+    if current_role != "مدير":
+        st.error("لا تملك صلاحية الوصول لهذه الصفحة")
+    else:
+        with st.form("settings_form"):
+            company_name = st.text_input("اسم الشركة / النظام", settings.get('company_name', 'نظام إدارة الإيجارات'))
+            primary_color = st.color_picker("اللون الأساسي", settings['primary_color'])
+            secondary_color = st.color_picker("اللون الثانوي", settings['secondary_color'])
+            background_color = st.color_picker("لون الخلفية", settings['background_color'])
+            font_size = st.slider("حجم الخط", min_value=10, max_value=24, value=settings['font_size'])
+            logo_file = st.file_uploader("شعار الشركة (PNG/JPEG)", type=["png", "jpg", "jpeg"])
+            submit_settings = st.form_submit_button("حفظ الإعدادات")
 
-    with st.form("settings_form"):
-        company_name = st.text_input("اسم الشركة / النظام", settings.get('company_name', 'نظام إدارة الإيجارات'))
-        primary_color = st.color_picker("اللون الأساسي", settings['primary_color'])
-        secondary_color = st.color_picker("اللون الثانوي", settings['secondary_color'])
-        background_color = st.color_picker("لون الخلفية", settings['background_color'])
-        font_size = st.slider("حجم الخط", min_value=10, max_value=24, value=settings['font_size'])
-        logo_file = st.file_uploader("شعار الشركة (PNG/JPEG)", type=["png", "jpg", "jpeg"])
-        submit_settings = st.form_submit_button("حفظ الإعدادات")
+            if submit_settings:
+                save_setting('company_name', company_name)
+                save_setting('primary_color', primary_color)
+                save_setting('secondary_color', secondary_color)
+                save_setting('background_color', background_color)
+                save_setting('font_size', font_size)
+                if logo_file is not None:
+                    logo_bytes = logo_file.read()
+                    save_setting('logo', logo_bytes)
+                st.success("تم حفظ الإعدادات بنجاح")
+                st.rerun()
 
-        if submit_settings:
-            save_setting('company_name', company_name)
-            save_setting('primary_color', primary_color)
-            save_setting('secondary_color', secondary_color)
-            save_setting('background_color', background_color)
-            save_setting('font_size', font_size)
-            if logo_file is not None:
-                logo_bytes = logo_file.read()
-                save_setting('logo', logo_bytes)
-            st.success("تم حفظ الإعدادات بنجاح")
-            st.rerun()
-
-    st.markdown("---")
-    st.subheader("معاينة الألوان")
-    st.markdown(f"""
-        <div style="background-color:{primary_color}; color:white; padding:20px; border-radius:10px; text-align:center; margin-bottom:10px;">
-            اللون الأساسي
-        </div>
-        <div style="background-color:{secondary_color}; color:white; padding:20px; border-radius:10px; text-align:center; margin-bottom:10px;">
-            اللون الثانوي
-        </div>
-        <div style="background-color:{background_color}; padding:20px; border-radius:10px; text-align:center; border:1px solid #ccc;">
-            لون الخلفية
-        </div>
-    """, unsafe_allow_html=True)
+        st.markdown("---")
+        st.subheader("معاينة الألوان")
+        st.markdown(f"""
+            <div style="background-color:{primary_color}; color:white; padding:20px; border-radius:10px; text-align:center; margin-bottom:10px;">
+                اللون الأساسي
+            </div>
+            <div style="background-color:{secondary_color}; color:white; padding:20px; border-radius:10px; text-align:center; margin-bottom:10px;">
+                اللون الثانوي
+            </div>
+            <div style="background-color:{background_color}; padding:20px; border-radius:10px; text-align:center; border:1px solid #ccc;">
+                لون الخلفية
+            </div>
+        """, unsafe_allow_html=True)
 
 # ================== النسخ الاحتياطي ==================
 elif menu == "نسخ احتياطي":
