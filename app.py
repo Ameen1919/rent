@@ -500,9 +500,14 @@ def display_dataframe_with_reorder(df, key_prefix):
 def load_tenants():
     conn = get_conn()
     df = pd.read_sql_query("""
-        SELECT id as "الرقم", name as "الاسم", phone as "الهاتف", 
-               national_id as "رقم الهوية / الإقامة", address as "العنوان", region as "المنطقة"
-        FROM tenants
+        SELECT t.id as "الرقم", t.name as "الاسم", t.phone as "الهاتف", 
+               t.national_id as "رقم الهوية / الإقامة", t.address as "العنوان", t.region as "المنطقة",
+               CASE WHEN EXISTS (
+                   SELECT 1 FROM contracts c 
+                   WHERE c.tenant_id = t.id AND c.status='نشط' AND c.end_date >= date('now')
+               ) THEN 'ساري' ELSE 'غير ساري' END as "حالة العقد"
+        FROM tenants t
+        ORDER BY t.name
     """, conn)
     conn.close()
     return df
@@ -560,6 +565,11 @@ def load_contracts():
         JOIN properties p ON c.property_id = p.id
     """
     df = pd.read_sql_query(query, conn)
+    # تحويل عمود 'ملف العقد' إلى حالة وجود ملف (نعم/لا)
+    if 'ملف العقد' in df.columns:
+        df['ملف العقد'] = df['ملف العقد'].apply(lambda x: 'نعم' if x is not None and len(x) > 0 else 'لا')
+    else:
+        df['ملف العقد'] = 'لا'
     conn.close()
     return df
 
@@ -674,6 +684,13 @@ if menu == "لوحة التحكم":
     df_contracts = load_contracts()
     df_payments = load_payments()
 
+    # إضافة مقاييس العقود المنتهية والقريبة من الانتهاء
+    today = date.today()
+    soon_limit = today + timedelta(days=60)
+    df_contracts['end_date_dt'] = pd.to_datetime(df_contracts['تاريخ النهاية'])
+    expiring_soon = df_contracts[(df_contracts['الحالة'] == 'نشط') & (df_contracts['end_date_dt'] >= pd.Timestamp(today)) & (df_contracts['end_date_dt'] <= pd.Timestamp(soon_limit))]
+    expired = df_contracts[(df_contracts['الحالة'] == 'نشط') & (df_contracts['end_date_dt'] < pd.Timestamp(today))]
+
     col1, col2, col3, col4 = st.columns(4)
     with col1:
         st.metric("إجمالي المستأجرين", len(df_tenants))
@@ -687,6 +704,12 @@ if menu == "لوحة التحكم":
         total_collected = df_payments["المدفوع"].sum()
         st.metric("إجمالي المحصل", f"{total_collected:,.2f}")
 
+    col5, col6 = st.columns(2)
+    with col5:
+        st.metric("عقود تنتهي خلال شهرين", len(expiring_soon))
+    with col6:
+        st.metric("عقود منتهية", len(expired))
+
     st.markdown("---")
     st.subheader("⚠️ تنبيهات غير مقروءة")
     alerts = get_unread_alerts()
@@ -698,11 +721,9 @@ if menu == "لوحة التحكم":
 
     st.markdown("---")
     st.subheader("📅 الدفعات القادمة خلال 30 يوم")
-    today = date.today()
-    end_date = today + timedelta(days=30)
     upcoming = df_payments[
         (df_payments["تاريخ الاستحقاق"] >= today.isoformat()) &
-        (df_payments["تاريخ الاستحقاق"] <= end_date.isoformat()) &
+        (df_payments["تاريخ الاستحقاق"] <= (today + timedelta(days=30)).isoformat()) &
         (df_payments["الحالة"].isin(["مستحق", "جزئي"]))
     ]
     if not upcoming.empty:
@@ -719,92 +740,124 @@ elif menu == "المستأجرين":
     with tab1:
         df_tenants = load_tenants()
         if not df_tenants.empty:
-            display_dataframe_with_reorder(df_tenants, "tenants")
-            tenant_dict = dict(zip(df_tenants["الاسم"], df_tenants["الرقم"]))
-            selected_name = st.selectbox("اختر مستأجر لعرض التفاصيل", list(tenant_dict.keys()))
-            tenant_id = tenant_dict[selected_name]
-
-            conn = get_conn()
-            cur = conn.cursor()
-            cur.execute("SELECT * FROM tenants WHERE id = ?", (tenant_id,))
-            tenant = cur.fetchone()
-
-            st.markdown("### بيانات المستأجر")
-            col1, col2 = st.columns(2)
-            with col1:
-                st.write(f"**الاسم:** {tenant[1]}")
-                st.write(f"**الهاتف:** {tenant[2] or 'غير محدد'}")
-                st.write(f"**رقم الهوية / الإقامة:** {tenant[3] or 'غير محدد'}")
-                st.write(f"**العنوان:** {tenant[4] or 'غير محدد'}")
-                st.write(f"**المنطقة:** {tenant[5] or 'غير محدد'}")
-            with col2:
-                st.write(f"**ملاحظات:** {tenant[6] or 'لا يوجد'}")
-
-            # أزرار تعديل وحذف حسب الدور
-            if current_role == "مدير":
-                col_edit, col_del = st.columns(2)
-                with col_edit:
-                    if st.button("تعديل بيانات المستأجر", key="edit_tenant_btn"):
-                        st.session_state['edit_tenant_id'] = tenant_id
-                        st.rerun()
-                with col_del:
-                    if st.button("حذف المستأجر", key="delete_tenant_btn"):
-                        if st.session_state.get('confirm_delete_tenant') == tenant_id:
-                            conn = get_conn()
-                            cur = conn.cursor()
-                            cur.execute("DELETE FROM tenants WHERE id = ?", (tenant_id,))
-                            conn.commit()
-                            conn.close()
-                            st.cache_data.clear()
-                            st.success("تم حذف المستأجر")
-                            st.session_state['confirm_delete_tenant'] = None
-                            st.rerun()
-                        else:
-                            st.session_state['confirm_delete_tenant'] = tenant_id
-                            st.warning("اضغط مرة أخرى لتأكيد الحذف")
-            elif current_role == "محاسب":
-                col_edit, _ = st.columns(2)
-                with col_edit:
-                    if st.button("تعديل بيانات المستأجر", key="edit_tenant_btn"):
-                        st.session_state['edit_tenant_id'] = tenant_id
-                        st.rerun()
-                st.info("لا تملك صلاحية الحذف")
-            else:  # مشاهد
-                st.info("صلاحيتك للعرض فقط")
-
-            # تنبيهات
-            alerts = get_unread_alerts(tenant_id)
-            if alerts:
-                st.warning("⚠️ تنبيهات غير مقروءة:")
-                for a in alerts:
-                    st.write(f"- {a[0]} (تاريخ: {a[1]})")
-                if st.button("تحديد كمقروء"):
-                    mark_alerts_read(tenant_id)
-                    st.rerun()
-
-            # ملاحظات
-            st.markdown("**الملاحظات:**")
-            cur.execute("SELECT note_date, note_text, priority, is_alert FROM notes WHERE tenant_id = ? ORDER BY note_date DESC", (tenant_id,))
-            notes = cur.fetchall()
-            if notes:
-                for n in notes:
-                    icon = "⚠️" if n[3] else ""
-                    st.write(f"- [{n[0]}] ({n[2]}) {n[1]} {icon}")
+            # إضافة خانة بحث
+            search_term = st.text_input("بحث في المستأجرين (الاسم، الهاتف، رقم الهوية)", key="search_tenants")
+            if search_term:
+                mask = df_tenants.apply(lambda row: search_term.lower() in str(row["الاسم"]).lower() or
+                                       search_term.lower() in str(row["الهاتف"]).lower() or
+                                       search_term.lower() in str(row["رقم الهوية / الإقامة"]).lower(), axis=1)
+                filtered_tenants = df_tenants[mask]
             else:
-                st.write("لا توجد ملاحظات.")
+                filtered_tenants = df_tenants
+            
+            if not filtered_tenants.empty:
+                display_dataframe_with_reorder(filtered_tenants, "tenants_filtered")
+                tenant_dict = dict(zip(filtered_tenants["الاسم"], filtered_tenants["الرقم"]))
+                selected_name = st.selectbox("اختر مستأجر لعرض التفاصيل", list(tenant_dict.keys()))
+                tenant_id = tenant_dict[selected_name]
 
-            # إضافة ملاحظة (مسموح للمدير والمحاسب)
-            if current_role in ["مدير", "محاسب"]:
-                with st.form("add_note_form"):
-                    note_text = st.text_area("ملاحظة جديدة")
-                    priority = st.selectbox("الأهمية", ["عادية", "متوسطة", "عالية"])
-                    is_alert = st.checkbox("تنبيه")
-                    if st.form_submit_button("إضافة ملاحظة"):
-                        if note_text.strip():
-                            add_note(tenant_id, note_text.strip(), priority, 1 if is_alert else 0)
-                            st.success("تمت إضافة الملاحظة")
+                conn = get_conn()
+                cur = conn.cursor()
+                cur.execute("SELECT * FROM tenants WHERE id = ?", (tenant_id,))
+                tenant = cur.fetchone()
+
+                st.markdown("### بيانات المستأجر")
+                col1, col2 = st.columns(2)
+                with col1:
+                    st.write(f"**الاسم:** {tenant[1]}")
+                    st.write(f"**الهاتف:** {tenant[2] or 'غير محدد'}")
+                    st.write(f"**رقم الهوية / الإقامة:** {tenant[3] or 'غير محدد'}")
+                    st.write(f"**العنوان:** {tenant[4] or 'غير محدد'}")
+                    st.write(f"**المنطقة:** {tenant[5] or 'غير محدد'}")
+                with col2:
+                    st.write(f"**ملاحظات:** {tenant[6] or 'لا يوجد'}")
+                    # حالة العقد من الجدول
+                    tenant_status = df_tenants[df_tenants['الرقم']==tenant_id]['حالة العقد'].iloc[0] if tenant_id in df_tenants['الرقم'].values else 'غير متاح'
+                    st.write(f"**حالة العقد:** {tenant_status}")
+
+                # عرض عقود المستأجر
+                st.markdown("### عقود المستأجر")
+                cur.execute('''
+                    SELECT c.id, c.contract_number, p.name, c.start_date, c.end_date, c.status
+                    FROM contracts c
+                    JOIN properties p ON c.property_id = p.id
+                    WHERE c.tenant_id = ?
+                    ORDER BY c.start_date DESC
+                ''', (tenant_id,))
+                tenant_contracts = cur.fetchall()
+                if tenant_contracts:
+                    df_tenant_contracts = pd.DataFrame(tenant_contracts, columns=["رقم العقد", "اسم العقار", "تاريخ البداية", "تاريخ النهاية", "الحالة"])
+                    st.dataframe(df_tenant_contracts, use_container_width=True)
+                else:
+                    st.info("لا توجد عقود لهذا المستأجر")
+
+                # أزرار تعديل وحذف حسب الدور
+                if current_role == "مدير":
+                    col_edit, col_del = st.columns(2)
+                    with col_edit:
+                        if st.button("تعديل بيانات المستأجر", key="edit_tenant_btn"):
+                            st.session_state['edit_tenant_id'] = tenant_id
                             st.rerun()
-            conn.close()
+                    with col_del:
+                        if st.button("حذف المستأجر", key="delete_tenant_btn"):
+                            if st.session_state.get('confirm_delete_tenant') == tenant_id:
+                                conn = get_conn()
+                                cur = conn.cursor()
+                                cur.execute("DELETE FROM tenants WHERE id = ?", (tenant_id,))
+                                conn.commit()
+                                conn.close()
+                                st.cache_data.clear()
+                                st.success("تم حذف المستأجر")
+                                st.session_state['confirm_delete_tenant'] = None
+                                st.rerun()
+                            else:
+                                st.session_state['confirm_delete_tenant'] = tenant_id
+                                st.warning("اضغط مرة أخرى لتأكيد الحذف")
+                elif current_role == "محاسب":
+                    col_edit, _ = st.columns(2)
+                    with col_edit:
+                        if st.button("تعديل بيانات المستأجر", key="edit_tenant_btn"):
+                            st.session_state['edit_tenant_id'] = tenant_id
+                            st.rerun()
+                    st.info("لا تملك صلاحية الحذف")
+                else:  # مشاهد
+                    st.info("صلاحيتك للعرض فقط")
+
+                # تنبيهات
+                alerts = get_unread_alerts(tenant_id)
+                if alerts:
+                    st.warning("⚠️ تنبيهات غير مقروءة:")
+                    for a in alerts:
+                        st.write(f"- {a[0]} (تاريخ: {a[1]})")
+                    if st.button("تحديد كمقروء"):
+                        mark_alerts_read(tenant_id)
+                        st.rerun()
+
+                # ملاحظات
+                st.markdown("**الملاحظات:**")
+                cur.execute("SELECT note_date, note_text, priority, is_alert FROM notes WHERE tenant_id = ? ORDER BY note_date DESC", (tenant_id,))
+                notes = cur.fetchall()
+                if notes:
+                    for n in notes:
+                        icon = "⚠️" if n[3] else ""
+                        st.write(f"- [{n[0]}] ({n[2]}) {n[1]} {icon}")
+                else:
+                    st.write("لا توجد ملاحظات.")
+
+                # إضافة ملاحظة
+                if current_role in ["مدير", "محاسب"]:
+                    with st.form("add_note_form"):
+                        note_text = st.text_area("ملاحظة جديدة")
+                        priority = st.selectbox("الأهمية", ["عادية", "متوسطة", "عالية"])
+                        is_alert = st.checkbox("تنبيه")
+                        if st.form_submit_button("إضافة ملاحظة"):
+                            if note_text.strip():
+                                add_note(tenant_id, note_text.strip(), priority, 1 if is_alert else 0)
+                                st.success("تمت إضافة الملاحظة")
+                                st.rerun()
+                conn.close()
+            else:
+                st.info("لا توجد نتائج مطابقة للبحث")
         else:
             st.info("لا يوجد مستأجرين بعد")
 
@@ -812,7 +865,6 @@ elif menu == "المستأجرين":
         if current_role == "مشاهد":
             st.warning("لا تملك صلاحية الإضافة أو التعديل")
         else:
-            # إذا كان هناك طلب تعديل
             if 'edit_tenant_id' in st.session_state and st.session_state['edit_tenant_id']:
                 tenant_id = st.session_state['edit_tenant_id']
                 conn = get_conn()
@@ -886,36 +938,46 @@ elif menu == "العقارات":
     with tab1:
         df_props = load_properties()
         if not df_props.empty:
-            display_dataframe_with_reorder(df_props, "properties")
-            if current_role == "مدير":
-                prop_id = st.selectbox("اختر عقار", df_props["الرقم"], format_func=lambda x: df_props[df_props["الرقم"]==x]["الاسم"].iloc[0])
-                col_edit, col_del = st.columns(2)
-                with col_edit:
+            search_prop = st.text_input("بحث في العقارات (الاسم، المنطقة)", key="search_props")
+            if search_prop:
+                mask = df_props.apply(lambda row: search_prop.lower() in str(row["الاسم"]).lower() or
+                                     search_prop.lower() in str(row["المنطقة"]).lower(), axis=1)
+                filtered_props = df_props[mask]
+            else:
+                filtered_props = df_props
+            if not filtered_props.empty:
+                display_dataframe_with_reorder(filtered_props, "properties_filtered")
+                if current_role == "مدير":
+                    prop_id = st.selectbox("اختر عقار", filtered_props["الرقم"], format_func=lambda x: filtered_props[filtered_props["الرقم"]==x]["الاسم"].iloc[0])
+                    col_edit, col_del = st.columns(2)
+                    with col_edit:
+                        if st.button("تعديل العقار", key="edit_prop_btn"):
+                            st.session_state['edit_property_id'] = prop_id
+                            st.rerun()
+                    with col_del:
+                        if st.button("حذف العقار", key="delete_prop_btn"):
+                            if st.session_state.get('confirm_delete_property') == prop_id:
+                                conn = get_conn()
+                                cur = conn.cursor()
+                                cur.execute("DELETE FROM properties WHERE id = ?", (prop_id,))
+                                conn.commit()
+                                conn.close()
+                                st.cache_data.clear()
+                                st.success("تم حذف العقار")
+                                st.session_state['confirm_delete_property'] = None
+                                st.rerun()
+                            else:
+                                st.session_state['confirm_delete_property'] = prop_id
+                                st.warning("اضغط مرة أخرى لتأكيد الحذف")
+                elif current_role == "محاسب":
+                    prop_id = st.selectbox("اختر عقار للتعديل", filtered_props["الرقم"], format_func=lambda x: filtered_props[filtered_props["الرقم"]==x]["الاسم"].iloc[0])
                     if st.button("تعديل العقار", key="edit_prop_btn"):
                         st.session_state['edit_property_id'] = prop_id
                         st.rerun()
-                with col_del:
-                    if st.button("حذف العقار", key="delete_prop_btn"):
-                        if st.session_state.get('confirm_delete_property') == prop_id:
-                            conn = get_conn()
-                            cur = conn.cursor()
-                            cur.execute("DELETE FROM properties WHERE id = ?", (prop_id,))
-                            conn.commit()
-                            conn.close()
-                            st.cache_data.clear()
-                            st.success("تم حذف العقار")
-                            st.session_state['confirm_delete_property'] = None
-                            st.rerun()
-                        else:
-                            st.session_state['confirm_delete_property'] = prop_id
-                            st.warning("اضغط مرة أخرى لتأكيد الحذف")
-            elif current_role == "محاسب":
-                prop_id = st.selectbox("اختر عقار للتعديل", df_props["الرقم"], format_func=lambda x: df_props[df_props["الرقم"]==x]["الاسم"].iloc[0])
-                if st.button("تعديل العقار", key="edit_prop_btn"):
-                    st.session_state['edit_property_id'] = prop_id
-                    st.rerun()
+                else:
+                    st.info("صلاحيتك للعرض فقط")
             else:
-                st.info("صلاحيتك للعرض فقط")
+                st.info("لا توجد نتائج مطابقة للبحث")
         else:
             st.info("لا توجد عقارات")
 
@@ -983,36 +1045,60 @@ elif menu == "العقود":
     with tab1:
         df_contracts = load_contracts()
         if not df_contracts.empty:
-            display_dataframe_with_reorder(df_contracts, "contracts")
-            if current_role == "مدير":
-                contract_id = st.selectbox("اختر عقد", df_contracts["الرقم"], format_func=lambda x: f"عقد رقم {x}")
-                col_edit, col_del = st.columns(2)
-                with col_edit:
+            search_contract = st.text_input("بحث في العقود (رقم العقد، المستأجر، العقار)", key="search_contracts")
+            if search_contract:
+                mask = df_contracts.apply(lambda row: search_contract.lower() in str(row["رقم العقد"]).lower() or
+                                         search_contract.lower() in str(row["اسم المستأجر"]).lower() or
+                                         search_contract.lower() in str(row["اسم العقار"]).lower(), axis=1)
+                filtered_contracts = df_contracts[mask]
+            else:
+                filtered_contracts = df_contracts
+            if not filtered_contracts.empty:
+                display_dataframe_with_reorder(filtered_contracts, "contracts_filtered")
+                if current_role == "مدير":
+                    contract_id = st.selectbox("اختر عقد", filtered_contracts["الرقم"], format_func=lambda x: f"عقد رقم {x}")
+                    col_edit, col_del = st.columns(2)
+                    with col_edit:
+                        if st.button("تعديل العقد", key="edit_contract_btn"):
+                            st.session_state['edit_contract_id'] = contract_id
+                            st.rerun()
+                    with col_del:
+                        if st.button("حذف العقد", key="delete_contract_btn"):
+                            if st.session_state.get('confirm_delete_contract') == contract_id:
+                                conn = get_conn()
+                                cur = conn.cursor()
+                                cur.execute("DELETE FROM contracts WHERE id = ?", (contract_id,))
+                                conn.commit()
+                                conn.close()
+                                st.cache_data.clear()
+                                st.success("تم حذف العقد")
+                                st.session_state['confirm_delete_contract'] = None
+                                st.rerun()
+                            else:
+                                st.session_state['confirm_delete_contract'] = contract_id
+                                st.warning("اضغط مرة أخرى لتأكيد الحذف")
+                    # عرض زر تحميل الملف إذا وجد
+                    cur = get_conn().cursor()
+                    cur.execute("SELECT contract_file FROM contracts WHERE id = ?", (contract_id,))
+                    file_data = cur.fetchone()
+                    if file_data and file_data[0]:
+                        if st.download_button("تحميل ملف العقد", data=file_data[0], file_name=f"contract_{contract_id}.pdf", mime="application/octet-stream"):
+                            pass
+                elif current_role == "محاسب":
+                    contract_id = st.selectbox("اختر عقد للتعديل", filtered_contracts["الرقم"], format_func=lambda x: f"عقد رقم {x}")
                     if st.button("تعديل العقد", key="edit_contract_btn"):
                         st.session_state['edit_contract_id'] = contract_id
                         st.rerun()
-                with col_del:
-                    if st.button("حذف العقد", key="delete_contract_btn"):
-                        if st.session_state.get('confirm_delete_contract') == contract_id:
-                            conn = get_conn()
-                            cur = conn.cursor()
-                            cur.execute("DELETE FROM contracts WHERE id = ?", (contract_id,))
-                            conn.commit()
-                            conn.close()
-                            st.cache_data.clear()
-                            st.success("تم حذف العقد")
-                            st.session_state['confirm_delete_contract'] = None
-                            st.rerun()
-                        else:
-                            st.session_state['confirm_delete_contract'] = contract_id
-                            st.warning("اضغط مرة أخرى لتأكيد الحذف")
-            elif current_role == "محاسب":
-                contract_id = st.selectbox("اختر عقد للتعديل", df_contracts["الرقم"], format_func=lambda x: f"عقد رقم {x}")
-                if st.button("تعديل العقد", key="edit_contract_btn"):
-                    st.session_state['edit_contract_id'] = contract_id
-                    st.rerun()
+                    # عرض زر تحميل الملف
+                    cur = get_conn().cursor()
+                    cur.execute("SELECT contract_file FROM contracts WHERE id = ?", (contract_id,))
+                    file_data = cur.fetchone()
+                    if file_data and file_data[0]:
+                        st.download_button("تحميل ملف العقد", data=file_data[0], file_name=f"contract_{contract_id}.pdf", mime="application/octet-stream")
+                else:
+                    st.info("صلاحيتك للعرض فقط")
             else:
-                st.info("صلاحيتك للعرض فقط")
+                st.info("لا توجد نتائج مطابقة للبحث")
         else:
             st.info("لا توجد عقود")
 
@@ -1487,10 +1573,20 @@ elif menu == "التقارير":
         if not df.empty:
             tax_values = []
             for _, row in df.iterrows():
-                if row['شامل الضريبة'] == 1:
-                    tax = row['المبلغ'] * (row['نسبة الضريبة'] / (1 + row['نسبة الضريبة']))
+                try:
+                    amount_val = float(row['المبلغ'] or 0)
+                    tax_included_val = int(row['شامل الضريبة'] or 0)
+                    tax_rate_val = float(row['نسبة الضريبة'] or 0)
+                except (ValueError, TypeError):
+                    tax_values.append(0)
+                    continue
+                if tax_included_val == 1:
+                    if tax_rate_val > 0:
+                        tax = amount_val * (tax_rate_val / (1 + tax_rate_val))
+                    else:
+                        tax = 0
                 else:
-                    tax = row['المبلغ'] * row['نسبة الضريبة']
+                    tax = amount_val * tax_rate_val
                 tax_values.append(tax)
             df['الضريبة'] = tax_values
             df['صافي المبلغ'] = df['المبلغ'] - df['الضريبة']
