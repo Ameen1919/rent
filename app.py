@@ -51,8 +51,8 @@ def reshape_arabic_text(text):
     bidi_text = get_display(reshaped)
     return bidi_text
 
-# دالة تصدير PDF عامة (محسنة)
-def export_df_to_pdf(df, title, file_name, columns_order=None, highlight_total=False):
+# دالة تصدير PDF عامة
+def export_df_to_pdf(df, title, file_name, columns_order=None):
     if columns_order:
         df = df[columns_order]
     buffer = io.BytesIO()
@@ -60,31 +60,31 @@ def export_df_to_pdf(df, title, file_name, columns_order=None, highlight_total=F
     width, height = A4
     font_name = setup_arabic_font()
     c.setFont(font_name, 10)
-    
+
     # عنوان
     c.setFillColor(colors.HexColor("#1e3a8a"))
     c.rect(0, height-30, width, 30, fill=1, stroke=0)
     c.setFillColor(colors.white)
     c.setFont(font_name, 16)
     c.drawCentredString(width/2, height-20, reshape_arabic_text(title))
-    
+
     # إعداد الجدول
     c.setFillColor(colors.white)
     c.setFont(font_name, 8)
-    x_start = 50
+    x_start = width - 50  # بدء من اليمين
     y = height - 60
     col_widths = [max(len(reshape_arabic_text(col)) * 4, 80) for col in df.columns]
     total_width = sum(col_widths)
-    
+
     # رؤوس الأعمدة
     c.setFillColor(colors.HexColor("#f0f0f0"))
-    c.rect(x_start, y-12, total_width, 20, fill=1, stroke=0)
+    c.rect(x_start - total_width, y-12, total_width, 20, fill=1, stroke=0)
     c.setFillColor(colors.black)
     for i, col in enumerate(df.columns):
-        x = x_start + sum(col_widths[:i])
+        x = x_start - sum(col_widths[:i+1])
         c.drawRightString(x + col_widths[i] - 5, y, reshape_arabic_text(col))
     y -= 25
-    
+
     # البيانات
     for _, row in df.iterrows():
         if y < 50:
@@ -92,87 +92,85 @@ def export_df_to_pdf(df, title, file_name, columns_order=None, highlight_total=F
             c.setFont(font_name, 8)
             y = height - 50
         for i, value in enumerate(row):
-            x = x_start + sum(col_widths[:i])
+            x = x_start - sum(col_widths[:i+1])
             c.drawRightString(x + col_widths[i] - 5, y, reshape_arabic_text(value))
         y -= 15
-    
+
     # خط سفلي
-    c.line(x_start, y+5, x_start+total_width, y+5)
-    
+    c.line(x_start - total_width, y+5, x_start, y+5)
+
     c.save()
     buffer.seek(0)
     st.download_button("تحميل PDF", data=buffer, file_name=file_name, mime="application/pdf")
 
-# دالة مخصصة لتقرير الضرائب PDF
-def export_tax_pdf(df, title, file_name):
+# دالة مخصصة لتقرير الضرائب PDF (مع صف إجمالي ودعم إعادة الترتيب)
+def export_tax_pdf(df, title, file_name, columns_order=None):
+    if columns_order:
+        df = df[columns_order]
     buffer = io.BytesIO()
     c = canvas.Canvas(buffer, pagesize=A4)
     width, height = A4
     font_name = setup_arabic_font()
     c.setFont(font_name, 10)
-    
+
     # عنوان
     c.setFillColor(colors.HexColor("#1e3a8a"))
     c.rect(0, height-30, width, 30, fill=1, stroke=0)
     c.setFillColor(colors.white)
     c.setFont(font_name, 16)
     c.drawCentredString(width/2, height-20, reshape_arabic_text(title))
-    
-    # إعداد الجدول
+
+    # إعداد الجدول (RTL)
     c.setFillColor(colors.white)
     c.setFont(font_name, 8)
-    x_start = 50
+    x_start = width - 50
     y = height - 60
-    # تحديد عرض الأعمدة
-    col_widths = [30, 100, 80, 60, 70, 80]  # المسلسل، اسم المستأجر، المبلغ شامل، نسبة الضريبة، مبلغ الضريبة، غير شامل
+    col_widths = []
+    for col in df.columns:
+        if col in ['المبلغ شامل الضريبة', 'مبلغ الضريبة', 'المبلغ غير شامل الضريبة']:
+            col_widths.append(70)
+        elif col == 'نسبة الضريبة':
+            col_widths.append(50)
+        else:
+            col_widths.append(max(len(reshape_arabic_text(col)) * 4, 80))
     total_width = sum(col_widths)
-    
+
     # رؤوس الأعمدة
     c.setFillColor(colors.HexColor("#f0f0f0"))
-    c.rect(x_start, y-12, total_width, 20, fill=1, stroke=0)
+    c.rect(x_start - total_width, y-12, total_width, 20, fill=1, stroke=0)
     c.setFillColor(colors.black)
-    headers = ["م", "اسم المستأجر", "المبلغ شامل", "نسبة الضريبة", "مبلغ الضريبة", "غير شامل"]
-    for i, col in enumerate(headers):
-        x = x_start + sum(col_widths[:i])
+    for i, col in enumerate(df.columns):
+        x = x_start - sum(col_widths[:i+1])
         c.drawRightString(x + col_widths[i] - 5, y, reshape_arabic_text(col))
     y -= 25
-    
+
     # البيانات
-    serial = 1
     for _, row in df.iterrows():
         if y < 50:
             c.showPage()
             c.setFont(font_name, 8)
             y = height - 50
-        # المسلسل
-        c.drawCentredString(x_start + col_widths[0]/2, y, str(serial))
-        serial += 1
-        # البيانات الأخرى
-        values = [row['اسم المستأجر'], f"{row['المبلغ شامل الضريبة']:.2f}", f"{row['نسبة الضريبة']*100:.1f}%",
-                  f"{row['مبلغ الضريبة']:.2f}", f"{row['المبلغ غير شامل الضريبة']:.2f}"]
-        for i, val in enumerate(values, start=1):
-            x = x_start + sum(col_widths[:i])
-            c.drawRightString(x + col_widths[i] - 5, y, reshape_arabic_text(val))
+        for i, value in enumerate(row):
+            x = x_start - sum(col_widths[:i+1])
+            c.drawRightString(x + col_widths[i] - 5, y, reshape_arabic_text(value))
         y -= 15
-    
-    # خط فاصل
-    c.line(x_start, y+5, x_start+total_width, y+5)
-    
+
     # صف الإجمالي
-    y -= 15
-    total_amount = df['المبلغ شامل الضريبة'].sum()
-    total_tax = df['مبلغ الضريبة'].sum()
-    total_net = df['المبلغ غير شامل الضريبة'].sum()
+    y -= 5
     c.setFillColor(colors.HexColor("#e8f0fe"))
-    c.rect(x_start, y-5, total_width, 15, fill=1, stroke=0)
+    c.rect(x_start - total_width, y-5, total_width, 15, fill=1, stroke=0)
     c.setFillColor(colors.black)
-    c.drawRightString(x_start + total_width - 5, y, reshape_arabic_text("الإجمالي"))
-    # كتابة القيم الإجمالية
-    c.drawRightString(x_start + col_widths[0] + col_widths[1] + col_widths[2] - 5, y, f"{total_amount:.2f}")
-    c.drawRightString(x_start + col_widths[0] + col_widths[1] + col_widths[2] + col_widths[3] - 5, y, "")
-    c.drawRightString(x_start + col_widths[0] + col_widths[1] + col_widths[2] + col_widths[3] + col_widths[4] - 5, y, f"{total_tax:.2f}")
-    c.drawRightString(x_start + total_width - 5, y, f"{total_net:.2f}")
-    
+    # نرسم كلمة "الإجمالي" في أول عمود من اليمين
+    first_col_x = x_start - col_widths[0]
+    c.drawRightString(x_start - 5, y, reshape_arabic_text("الإجمالي"))
+    # نرسم القيم الإجمالية في الأعمدة الرقمية
+    for i, col in enumerate(df.columns):
+        if col in ['المبلغ شامل الضريبة', 'مبلغ الضريبة', 'المبلغ غير شامل الضريبة']:
+            total_val = df[col].sum()
+            x = x_start - sum(col_widths[:i+1])
+            c.drawRightString(x + col_widths[i] - 5, y, f"{total_val:.2f}")
+    y -= 15
+
     c.save()
     buffer.seek(0)
     st.download_button("تحميل PDF", data=buffer, file_name=file_name, mime="application/pdf")
@@ -1349,7 +1347,6 @@ elif menu == "صفحة السداد":
         else:
             tenant_id = st.selectbox("اختر المستأجر", df_tenants["الرقم"], format_func=lambda x: df_tenants[df_tenants["الرقم"]==x]["الاسم"].iloc[0])
             payment_date = st.date_input("تاريخ السداد", value=date.today())
-            # جلب الدفعات المستحقة حتى تاريخ السداد
             conn = get_conn()
             cur = conn.cursor()
             cur.execute('''
@@ -1365,7 +1362,6 @@ elif menu == "صفحة السداد":
                 st.markdown(f"### الدفعات المستحقة حتى {payment_date}")
                 df_dues = pd.DataFrame(dues, columns=["رقم الدفعة", "تاريخ الاستحقاق", "المبلغ", "المدفوع", "المتبقي", "الحالة"])
                 st.dataframe(df_dues, use_container_width=True)
-                # استخدام st.data_editor لإدخال مبالغ السداد
                 df_edit = df_dues.copy()
                 df_edit["مبلغ السداد"] = 0.0
                 edited = st.data_editor(
@@ -1376,7 +1372,6 @@ elif menu == "صفحة السداد":
                     hide_index=True,
                     key="payment_editor"
                 )
-                # زر تسجيل السداد
                 if st.button("تسجيل السداد للمبالغ المحددة"):
                     conn = get_conn()
                     cur = conn.cursor()
@@ -1395,7 +1390,6 @@ elif menu == "صفحة السداد":
                             ''', (new_paid, payment_date.isoformat(), status, pay_id))
                             total_paid_amount += pay_amount
                     if total_paid_amount > 0:
-                        # إنشاء إيصال واحد بالمبلغ الإجمالي
                         receipt_number = generate_receipt_number()
                         cur.execute('''
                             INSERT INTO receipts (receipt_number, tenant_id, amount, receipt_date, payment_method)
@@ -1664,9 +1658,11 @@ elif menu == "التقارير":
             with col2:
                 to_date = st.date_input("إلى تاريخ", value=date.today())
         conn = get_conn()
-        # جلب الدفعات المدفوعة بالكامل فقط
+        # جلب الدفعات المدفوعة بالكامل مع تفاصيل العقد
         query = '''
-            SELECT t.name as 'اسم المستأجر', pay.amount as 'المبلغ شامل الضريبة',
+            SELECT t.name as 'اسم المستأجر', c.contract_number as 'رقم العقد',
+                   c.start_date || ' إلى ' || c.end_date as 'فترة الإيجار',
+                   pay.amount as 'المبلغ شامل الضريبة',
                    c.tax_included as 'شامل الضريبة', c.tax_rate as 'نسبة الضريبة'
             FROM payments pay
             JOIN tenants t ON pay.tenant_id = t.id
@@ -1692,20 +1688,22 @@ elif menu == "التقارير":
                 tax_values.append(tax)
             df['مبلغ الضريبة'] = tax_values
             df['المبلغ غير شامل الضريبة'] = df['المبلغ شامل الضريبة'] - df['مبلغ الضريبة']
-            # إعادة ترتيب الأعمدة
-            df = df[['اسم المستأجر', 'المبلغ شامل الضريبة', 'نسبة الضريبة', 'مبلغ الضريبة', 'المبلغ غير شامل الضريبة']]
-            st.dataframe(df, use_container_width=True)
-            total_amount = df['المبلغ شامل الضريبة'].sum()
-            total_tax = df['مبلغ الضريبة'].sum()
-            total_net = df['المبلغ غير شامل الضريبة'].sum()
+            # إعادة ترتيب الأعمدة لتشمل الجديدة
+            df = df[['اسم المستأجر', 'رقم العقد', 'فترة الإيجار', 'المبلغ شامل الضريبة', 'نسبة الضريبة', 'مبلغ الضريبة', 'المبلغ غير شامل الضريبة']]
+            # عرض مع إمكانية إعادة الترتيب
+            df_display, selected_cols = display_dataframe_with_reorder(df, "report_tax")
+            total_amount = df_display['المبلغ شامل الضريبة'].sum() if 'المبلغ شامل الضريبة' in df_display.columns else 0
+            total_tax = df_display['مبلغ الضريبة'].sum() if 'مبلغ الضريبة' in df_display.columns else 0
+            total_net = df_display['المبلغ غير شامل الضريبة'].sum() if 'المبلغ غير شامل الضريبة' in df_display.columns else 0
             st.write(f"**إجمالي المبلغ شامل الضريبة:** {total_amount:,.2f}")
             st.write(f"**إجمالي مبلغ الضريبة:** {total_tax:,.2f}")
             st.write(f"**إجمالي المبلغ غير شامل الضريبة:** {total_net:,.2f}")
             output = io.BytesIO()
             with pd.ExcelWriter(output, engine='xlsxwriter') as writer:
-                df.to_excel(writer, index=False)
+                df_display.to_excel(writer, index=False)
             st.download_button("تحميل Excel", data=output.getvalue(), file_name=f"ضرائب_{from_date}_to_{to_date}.xlsx")
-            export_tax_pdf(df, "تقرير الضرائب", f"ضرائب_{from_date}_to_{to_date}.pdf")
+            # تصدير PDF مع مراعاة الترتيب المختار
+            export_tax_pdf(df_display, "تقرير الضرائب", f"ضرائب_{from_date}_to_{to_date}.pdf", columns_order=selected_cols)
         else:
             st.info("لا توجد دفعات مدفوعة بالكامل في هذه الفترة")
 
