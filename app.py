@@ -60,6 +60,30 @@ def parse_currency(value):
 def format_currency(value):
     return f"{value:,.2f}"
 
+# دالة تقسيم النص الطويل لسطرين
+def split_header_text(col):
+    """تقسيم عناوين الأعمدة الطويلة إلى سطرين"""
+    if col == 'المبلغ شامل الضريبة':
+        return ['المبلغ', 'شامل الضريبة']
+    elif col == 'المبلغ غير شامل الضريبة':
+        return ['المبلغ', 'غير شامل الضريبة']
+    elif col == 'نسبة الضريبة':
+        return ['نسبة', 'الضريبة']
+    elif col == 'بداية الفترة':
+        return ['بداية', 'الفترة']
+    elif col == 'نهاية الفترة':
+        return ['نهاية', 'الفترة']
+    else:
+        return [col]
+
+def draw_centered_multiline(c, text_lines, x_center, y, font_name, font_size):
+    """رسم نص متعدد الأسطر في منتصف الخلية"""
+    line_height = font_size + 2
+    total_height = len(text_lines) * line_height
+    start_y = y + (total_height / 2) - (line_height / 2)
+    for i, line in enumerate(text_lines):
+        c.drawCentredString(x_center, start_y - i * line_height, reshape_arabic_text(line))
+
 # دالة تصدير PDF عامة
 def export_df_to_pdf(df, title, file_name, columns_order=None):
     if columns_order:
@@ -69,17 +93,20 @@ def export_df_to_pdf(df, title, file_name, columns_order=None):
     width, height = A4
     font_name = setup_arabic_font()
     c.setFont(font_name, 10)
+    # عنوان
     c.setFillColor(colors.HexColor("#4A90E2"))
     c.rect(0, height-30, width, 30, fill=1, stroke=0)
     c.setFillColor(colors.white)
     c.setFont(font_name, 16)
     c.drawCentredString(width/2, height-20, reshape_arabic_text(title))
+    # جدول
     c.setFillColor(colors.white)
     c.setFont(font_name, 8)
     x_start = width - 50
     y = height - 60
     col_widths = [max(len(reshape_arabic_text(col)) * 4, 80) for col in df.columns]
     total_width = sum(col_widths)
+    # رؤوس
     c.setFillColor(colors.HexColor("#f0f0f0"))
     c.rect(x_start - total_width, y-12, total_width, 20, fill=1, stroke=0)
     c.setFillColor(colors.black)
@@ -92,6 +119,7 @@ def export_df_to_pdf(df, title, file_name, columns_order=None):
             c.showPage()
             c.setFont(font_name, 8)
             y = height - 50
+            # إعادة رؤوس
             c.setFillColor(colors.HexColor("#f0f0f0"))
             c.rect(x_start - total_width, y-12, total_width, 20, fill=1, stroke=0)
             c.setFillColor(colors.black)
@@ -146,7 +174,7 @@ def export_tax_pdf(df, title, file_name, columns_order=None):
         if col == "م":
             col_widths.append(30)
         elif col in ['المبلغ شامل الضريبة', 'مبلغ الضريبة', 'المبلغ غير شامل الضريبة']:
-            col_widths.append(80)
+            col_widths.append(90)
         elif col == 'نسبة الضريبة':
             col_widths.append(60)
         elif col in ['بداية الفترة', 'نهاية الفترة']:
@@ -156,46 +184,67 @@ def export_tax_pdf(df, title, file_name, columns_order=None):
             col_widths.append(width_est)
 
     total_width = sum(col_widths)
-    # توسيط أفقي
     x_start = (width - total_width) / 2
     if x_start < 30:
         x_start = 30
 
     y = height - 60
 
-    # رؤوس
+    # رسم رؤوس الأعمدة مع تقسيم النصوص الطويلة
+    c.setFont(font_name, 7)  # حجم خط أصغر للرؤوس
     c.setFillColor(colors.HexColor("#f0f0f0"))
-    c.rect(x_start, y-12, total_width, 20, fill=1, stroke=0)
+    c.rect(x_start, y-18, total_width, 28, fill=1, stroke=0)
     c.setFillColor(colors.black)
     x_cursor = x_start + total_width
     for i, header in enumerate(headers):
         col_w = col_widths[i]
         x_right = x_cursor
         x_left = x_cursor - col_w
-        c.drawCentredString((x_left + x_right) / 2, y, reshape_arabic_text(header))
+        x_center = (x_left + x_right) / 2
+        if header == "م":
+            c.drawCentredString(x_center, y-2, "م")
+        else:
+            text_lines = split_header_text(header)
+            if len(text_lines) == 1:
+                c.drawCentredString(x_center, y-2, reshape_arabic_text(text_lines[0]))
+            else:
+                draw_centered_multiline(c, text_lines, x_center, y-8, font_name, 7)
         x_cursor -= col_w
-    y -= 25
+    y -= 30
 
+    # بيانات
+    c.setFont(font_name, 8)
     serial = 1
     for _, row in df.iterrows():
         if y < 50:
             c.showPage()
             c.setFont(font_name, 8)
             y = height - 50
+            # إعادة رؤوس الصفحة الجديدة
+            c.setFont(font_name, 7)
             c.setFillColor(colors.HexColor("#f0f0f0"))
-            c.rect(x_start, y-12, total_width, 20, fill=1, stroke=0)
+            c.rect(x_start, y-18, total_width, 28, fill=1, stroke=0)
             c.setFillColor(colors.black)
             x_cursor = x_start + total_width
             for i, header in enumerate(headers):
                 col_w = col_widths[i]
                 x_right = x_cursor
                 x_left = x_cursor - col_w
-                c.drawCentredString((x_left + x_right) / 2, y, reshape_arabic_text(header))
+                x_center = (x_left + x_right) / 2
+                if header == "م":
+                    c.drawCentredString(x_center, y-2, "م")
+                else:
+                    text_lines = split_header_text(header)
+                    if len(text_lines) == 1:
+                        c.drawCentredString(x_center, y-2, reshape_arabic_text(text_lines[0]))
+                    else:
+                        draw_centered_multiline(c, text_lines, x_center, y-8, font_name, 7)
                 x_cursor -= col_w
-            y -= 25
+            y -= 30
+            c.setFont(font_name, 8)
 
         c.setFillColor(colors.white)
-        c.rect(x_start, y-5, total_width, 15, fill=1, stroke=0)
+        c.rect(x_start, y-5, total_width, 18, fill=1, stroke=0)
         c.setFillColor(colors.black)
 
         col_w = col_widths[0]
@@ -217,22 +266,24 @@ def export_tax_pdf(df, title, file_name, columns_order=None):
             c.drawRightString(x_right - 5, y, reshape_arabic_text(value_str))
             x_cursor -= col_w
 
+        # خطوط
         c.setStrokeColor(colors.grey)
         c.setLineWidth(0.5)
-        c.line(x_start, y+10, x_start+total_width, y+10)
+        c.line(x_start, y+12, x_start+total_width, y+12)
         c.line(x_start, y-5, x_start+total_width, y-5)
         x_cursor = x_start + total_width
         for i in range(len(headers)):
-            c.line(x_cursor, y+10, x_cursor, y-5)
+            c.line(x_cursor, y+12, x_cursor, y-5)
             x_cursor -= col_widths[i]
-        c.line(x_start, y+10, x_start, y-5)
-        y -= 15
+        c.line(x_start, y+12, x_start, y-5)
+        y -= 18
 
     c.line(x_start, y+5, x_start+total_width, y+5)
 
+    # صف الإجمالي
     y -= 5
     c.setFillColor(colors.HexColor("#e8f0fe"))
-    c.rect(x_start, y-5, total_width, 15, fill=1, stroke=0)
+    c.rect(x_start, y-5, total_width, 18, fill=1, stroke=0)
     c.setFillColor(colors.black)
     col_w = col_widths[0]
     x_right = x_start + total_width
@@ -253,6 +304,7 @@ def export_tax_pdf(df, title, file_name, columns_order=None):
     st.download_button("تحميل PDF", data=buffer, file_name=file_name, mime="application/pdf")
 
 def print_receipt(receipt_id):
+    """توليد PDF لسند قبض واحد"""
     conn = get_conn()
     cur = conn.cursor()
     cur.execute('''
@@ -1293,6 +1345,7 @@ elif menu == "العقود":
                         tenant_id = st.selectbox("المستأجر", df_tenants["الرقم"],
                                                  index=df_tenants.index[df_tenants["الرقم"] == contract_data[0]][0],
                                                  format_func=lambda x: df_tenants[df_tenants["الرقم"]==x]["الاسم"].iloc[0])
+                        # عرض معلومات المستأجر
                         tenant_info = df_tenants[df_tenants["الرقم"] == tenant_id].iloc[0]
                         st.info(f"الهاتف: {tenant_info['الهاتف']} | المنطقة: {tenant_info['المنطقة']} | حالة العقد: {tenant_info['حالة العقد']}")
                         property_id = st.selectbox("العقار", df_props["الرقم"],
@@ -1335,6 +1388,7 @@ elif menu == "العقود":
                 else:
                     with st.form("add_contract_form", clear_on_submit=True):
                         tenant_id = st.selectbox("المستأجر", df_tenants["الرقم"], format_func=lambda x: df_tenants[df_tenants["الرقم"]==x]["الاسم"].iloc[0])
+                        # عرض معلومات المستأجر
                         tenant_info = df_tenants[df_tenants["الرقم"] == tenant_id].iloc[0]
                         st.info(f"الهاتف: {tenant_info['الهاتف']} | المنطقة: {tenant_info['المنطقة']} | حالة العقد: {tenant_info['حالة العقد']}")
                         property_id = st.selectbox("العقار", df_props["الرقم"], format_func=lambda x: df_props[df_props["الرقم"]==x]["الاسم"].iloc[0])
@@ -1524,26 +1578,63 @@ elif menu == "التقارير":
             st.info("لا يوجد مستأجرين")
         else:
             tenant_id = st.selectbox("اختر المستأجر", df_tenants["الرقم"], format_func=lambda x: df_tenants[df_tenants["الرقم"]==x]["الاسم"].iloc[0])
+            # إضافة اختيار فترة تاريخية
+            col_from, col_to = st.columns(2)
+            with col_from:
+                if cal_choice == "هجري":
+                    hijri_from = st.text_input("من تاريخ هجري (يوم-شهر-سنة)", "01-01-1445")
+                    try:
+                        from_date = hijri_to_gregorian(hijri_from)
+                    except:
+                        st.error("صيغة التاريخ الهجري غير صحيحة")
+                        st.stop()
+                else:
+                    from_date = st.date_input("من تاريخ", value=date.today().replace(day=1))
+            with col_to:
+                if cal_choice == "هجري":
+                    hijri_to = st.text_input("إلى تاريخ هجري (يوم-شهر-سنة)", "30-12-1445")
+                    try:
+                        to_date = hijri_to_gregorian(hijri_to)
+                    except:
+                        st.error("صيغة التاريخ الهجري غير صحيحة")
+                        st.stop()
+                else:
+                    to_date = st.date_input("إلى تاريخ", value=date.today())
+
             conn = get_conn()
             cur = conn.cursor()
-            cur.execute("SELECT name FROM tenants WHERE id = ?", (tenant_id,))
-            tenant_name = cur.fetchone()[0]
+            cur.execute("SELECT name, region FROM tenants WHERE id = ?", (tenant_id,))
+            tenant_name, tenant_region = cur.fetchone()
+            # جلب رقم العقد إن وجد
+            cur.execute('''
+                SELECT c.contract_number FROM contracts c 
+                WHERE c.tenant_id = ? AND c.status='نشط'
+                LIMIT 1
+            ''', (tenant_id,))
+            contract_row = cur.fetchone()
+            contract_no = contract_row[0] if contract_row else "لا يوجد"
+
             cur.execute('''
                 SELECT id, due_date, amount, paid_amount, (amount - paid_amount) as remaining, status, paid_date, attachment
-                FROM payments WHERE tenant_id = ? ORDER BY due_date
-            ''', (tenant_id,))
+                FROM payments WHERE tenant_id = ? AND due_date BETWEEN ? AND ?
+                ORDER BY due_date
+            ''', (tenant_id, from_date.isoformat(), to_date.isoformat()))
             payments = cur.fetchall()
             cur.execute('''
                 SELECT receipt_number, amount, receipt_date, payment_method, attachment
-                FROM receipts WHERE tenant_id = ? ORDER BY receipt_date DESC
-            ''', (tenant_id,))
+                FROM receipts WHERE tenant_id = ? AND receipt_date BETWEEN ? AND ?
+                ORDER BY receipt_date DESC
+            ''', (tenant_id, from_date.isoformat(), to_date.isoformat()))
             receipts = cur.fetchall()
             conn.close()
+
             st.markdown(f"### كشف حساب: {tenant_name}")
+            st.write(f"**المنطقة:** {tenant_region or 'غير محدد'} | **رقم العقد:** {contract_no}")
             if cal_choice == "هجري":
-                st.write(f"التاريخ: {gregorian_to_hijri(date.today())} هـ")
+                st.write(f"**الفترة:** من {from_date} إلى {to_date} هـ")
             else:
-                st.write(f"التاريخ: {date.today().isoformat()} م")
+                st.write(f"**الفترة:** من {from_date} إلى {to_date} م")
+
             if payments:
                 for pay in payments:
                     pay_id, due, amount, paid, remaining, status, paid_date, attachment = pay
@@ -1563,7 +1654,8 @@ elif menu == "التقارير":
                 st.write(f"**إجمالي المدفوع:** {format_currency(total_paid)}")
                 st.write(f"**المتبقي:** {format_currency(total_amount - total_paid)}")
             else:
-                st.info("لا توجد دفعات")
+                st.info("لا توجد دفعات في هذه الفترة")
+
             st.markdown("### سندات القبض")
             if receipts:
                 for rec in receipts:
@@ -1579,7 +1671,8 @@ elif menu == "التقارير":
                         else:
                             st.write("لا يوجد مرفق.")
             else:
-                st.info("لا توجد سندات")
+                st.info("لا توجد سندات في هذه الفترة")
+
             if payments:
                 df_payments = pd.DataFrame([(p[1], p[2], p[3], p[2]-p[3], p[5], p[6]) for p in payments],
                                            columns=["تاريخ الاستحقاق", "المبلغ", "المدفوع", "المتبقي", "الحالة", "تاريخ السداد"])
@@ -1594,8 +1687,8 @@ elif menu == "التقارير":
                                                    columns=["رقم السند", "المبلغ", "التاريخ", "الطريقة"])
                         df_receipts["المبلغ"] = df_receipts["المبلغ"].apply(format_currency)
                         df_receipts.to_excel(writer, sheet_name='سندات', index=False)
-                st.download_button("تحميل Excel", data=output.getvalue(), file_name=f"كشف_حساب_{tenant_name}.xlsx")
-                export_df_to_pdf(df_payments, f"كشف حساب {tenant_name}", f"كشف_حساب_{tenant_name}.pdf")
+                st.download_button("تحميل Excel", data=output.getvalue(), file_name=f"كشف_حساب_{tenant_name}_{from_date}_to_{to_date}.xlsx")
+                export_df_to_pdf(df_payments, f"كشف حساب {tenant_name} من {from_date} إلى {to_date}", f"كشف_حساب_{tenant_name}_{from_date}_to_{to_date}.pdf")
 
     elif report_type == "الدفعات المستحقة بين تاريخين":
         st.markdown("### تقرير الدفعات المستحقة بين تاريخين")
@@ -1618,7 +1711,12 @@ elif menu == "التقارير":
             with col2:
                 to_date = st.date_input("إلى تاريخ", value=date.today())
         tenant_filter = st.selectbox("اختر مستأجر (اختياري)", ["الكل"] + load_tenants()["الاسم"].tolist())
-        region_filter = st.text_input("فلتر منطقة (اتركه فارغ للكل)")
+
+        # جلب المناطق كخيارات
+        tenants_df = load_tenants()
+        regions = tenants_df["المنطقة"].dropna().unique().tolist()
+        region_filter = st.selectbox("المنطقة", ["الكل"] + regions)
+
         conn = get_conn()
         cur = conn.cursor()
         query = '''
@@ -1636,13 +1734,14 @@ elif menu == "التقارير":
         if tenant_filter != "الكل":
             query += " AND t.name = ?"
             params.append(tenant_filter)
-        if region_filter:
+        if region_filter != "الكل":
             query += " AND t.region = ?"
             params.append(region_filter)
         query += " ORDER BY pay.due_date"
         cur.execute(query, params)
         dues = cur.fetchall()
         conn.close()
+
         if dues:
             df = pd.DataFrame(dues, columns=["المستأجر", "العقار", "تاريخ الاستحقاق", "المبلغ", "المدفوع", "المتبقي", "الحالة", "المنطقة"])
             df["المبلغ"] = df["المبلغ"].apply(format_currency)
