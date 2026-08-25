@@ -598,7 +598,6 @@ def init_db():
     conn.close()
 
 init_db()
-
 # ---------- دوال الصلاحيات ----------
     PAGE_KEYS = [
     "لوحة التحكم",
@@ -619,6 +618,7 @@ init_db()
     "الإعدادات",
     "نسخ احتياطي"
 ]
+    
 def get_default_permissions(role):
     if role == 'مدير':
         # المدير يملك كل الصلاحيات
