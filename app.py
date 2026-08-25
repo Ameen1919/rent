@@ -566,14 +566,6 @@ PAGE_KEYS = [
     "نسخ احتياطي"
 ]
 
-PERMISSION_KEYS = [
-    "عرض",
-    "تعديل",
-    "حذف",
-    "تسجيل",
-    "طباعة"
-]
-
 def get_default_permissions(role):
     if role == 'مدير':
         return {page: True for page in PAGE_KEYS}
@@ -637,6 +629,17 @@ def has_permission(user_id, page):
     permissions = load_permissions(user_id)
     return permissions.get(page, False)
 
+def check_login(username, password):
+    conn = get_conn()
+    cur = conn.cursor()
+    password_hash = hashlib.sha256(password.encode()).hexdigest()
+    cur.execute("SELECT id, username, role FROM users WHERE username = ? AND password_hash = ?", (username, password_hash))
+    user = cur.fetchone()
+    conn.close()
+    if user:
+        return {'id': user[0], 'username': user[1], 'role': user[2]}
+    return None
+
 # ---------- دوال الإعدادات ----------
 def load_settings():
     conn = get_conn()
@@ -696,6 +699,70 @@ primary_color = settings['primary_color']
 secondary_color = settings['secondary_color']
 background_color = settings['background_color']
 logo_data = load_logo_data()
+
+# ---------- تسجيل الدخول ----------
+if 'logged_in' not in st.session_state:
+    st.session_state.logged_in = False
+    st.session_state.user_info = None
+
+if not st.session_state.logged_in:
+    st.markdown(f"""
+    <style>
+        .login-box {{
+            max-width: 400px;
+            margin: auto;
+            padding: 40px;
+            background: white;
+            border-radius: 10px;
+            box-shadow: 0 0 20px rgba(0,0,0,0.1);
+            text-align: center;
+        }}
+        .login-box h2 {{
+            color: {primary_color};
+            margin-bottom: 20px;
+        }}
+        .login-box input {{
+            width: 100%;
+            padding: 10px;
+            margin: 10px 0;
+            border: 1px solid #ddd;
+            border-radius: 5px;
+            text-align: right;
+        }}
+        .login-btn {{
+            width: 100%;
+            padding: 10px;
+            background-color: {secondary_color};
+            color: white;
+            border: none;
+            border-radius: 5px;
+            font-size: 16px;
+            cursor: pointer;
+        }}
+    </style>
+    <div class="login-box">
+        <h2>تسجيل الدخول</h2>
+    """, unsafe_allow_html=True)
+    with st.form("login_form"):
+        username = st.text_input("اسم المستخدم")
+        password = st.text_input("كلمة المرور", type="password")
+        submitted = st.form_submit_button("دخول")
+        if submitted:
+            user = check_login(username, password)
+            if user:
+                st.session_state.logged_in = True
+                st.session_state.user_info = user
+                st.rerun()
+            else:
+                st.error("اسم المستخدم أو كلمة المرور غير صحيحة")
+    st.markdown("</div>", unsafe_allow_html=True)
+    st.stop()
+
+# ---------- عرض التطبيق بعد تسجيل الدخول ----------
+user_info = st.session_state.user_info
+current_user_id = user_info['id']
+current_role = user_info['role']
+user_permissions = load_permissions(current_user_id)
 
 st.markdown(f"""
 <style>
@@ -757,6 +824,15 @@ if logo_data:
 else:
     st.sidebar.markdown("🏢 **نظام الإدارة**")
 
+st.sidebar.markdown(f"**المستخدم:** {user_info['username']}")
+st.sidebar.markdown(f"**الدور:** {current_role}")
+st.sidebar.markdown("---")
+
+if st.sidebar.button("تسجيل الخروج"):
+    st.session_state.logged_in = False
+    st.session_state.user_info = None
+    st.rerun()
+
 st.sidebar.markdown("---")
 
 col_up, col_down = st.sidebar.columns(2)
@@ -770,28 +846,6 @@ with col_down:
         st.rerun()
 
 st.sidebar.markdown("---")
-
-conn = get_conn()
-cur = conn.cursor()
-cur.execute("SELECT id, username, role FROM users")
-users = cur.fetchall()
-conn.close()
-
-if users:
-    user_options = {u[1]: u[0] for u in users}
-    selected_user = st.sidebar.selectbox("المستخدم الحالي", list(user_options.keys()))
-    current_user_id = user_options[selected_user]
-    conn = get_conn()
-    cur = conn.cursor()
-    cur.execute("SELECT role FROM users WHERE id = ?", (current_user_id,))
-    current_role = cur.fetchone()[0]
-    conn.close()
-    st.sidebar.markdown(f"**الدور:** {current_role}")
-    user_permissions = load_permissions(current_user_id)
-else:
-    current_role = "مدير"
-    current_user_id = None
-    user_permissions = {}
 
 menu = st.sidebar.radio("القائمة الرئيسية", PAGE_KEYS)
 
