@@ -595,7 +595,24 @@ def init_db():
     conn.commit()
     conn.close()
 
-init_db()
+@st.cache_resource
+def init_db():
+    conn = get_conn()
+    cur = conn.cursor()
+    # ... إنشاء الجداول ...
+    cur.execute('''
+        CREATE TABLE IF NOT EXISTS users (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            username TEXT UNIQUE NOT NULL,
+            password_hash TEXT,
+            role TEXT DEFAULT 'مشاهد',
+            permissions TEXT DEFAULT '{}',
+            created_at TEXT DEFAULT CURRENT_TIMESTAMP
+        )
+    ''')
+    # ✅ إضافة هذا السطر لضمان وجود عمود permissions
+    ensure_columns(cur, 'users', ['permissions'])
+    # ... بقية الجداول ...
 
 # ---------- دوال الصلاحيات ----------
 PAGE_KEYS = [
