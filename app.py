@@ -461,8 +461,8 @@ def ensure_columns(cur, table_name, required_columns):
                 cur.execute(f"ALTER TABLE {table_name} ADD COLUMN {col_name} INTEGER DEFAULT 0")
             elif col_name == 'tax_rate':
                 cur.execute(f"ALTER TABLE {table_name} ADD COLUMN {col_name} REAL DEFAULT 0.15")
-            elif col_name in ('attachment', 'contract_file'):
-                cur.execute(f"ALTER TABLE {table_name} ADD COLUMN {col_name} BLOB")
+            elif col_name in ('attachment', 'contract_file', 'permissions'):
+                cur.execute(f"ALTER TABLE {table_name} ADD COLUMN {col_name} TEXT")
             else:
                 cur.execute(f"ALTER TABLE {table_name} ADD COLUMN {col_name} TEXT")
 
@@ -486,6 +486,8 @@ def init_db():
             created_at TEXT DEFAULT CURRENT_TIMESTAMP
         )
     ''')
+    # ✅ ترحيل: إضافة عمود permissions إذا كان مفقوداً في قاعدة قديمة
+    ensure_columns(cur, 'users', ['permissions'])
     cur.execute('''
         CREATE TABLE IF NOT EXISTS tenants (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -595,24 +597,7 @@ def init_db():
     conn.commit()
     conn.close()
 
-@st.cache_resource
-def init_db():
-    conn = get_conn()
-    cur = conn.cursor()
-    # ... إنشاء الجداول ...
-    cur.execute('''
-        CREATE TABLE IF NOT EXISTS users (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            username TEXT UNIQUE NOT NULL,
-            password_hash TEXT,
-            role TEXT DEFAULT 'مشاهد',
-            permissions TEXT DEFAULT '{}',
-            created_at TEXT DEFAULT CURRENT_TIMESTAMP
-        )
-    ''')
-    # ✅ إضافة هذا السطر لضمان وجود عمود permissions
-    ensure_columns(cur, 'users', ['permissions'])
-    # ... بقية الجداول ...
+init_db()
 
 # ---------- دوال الصلاحيات ----------
 PAGE_KEYS = [
@@ -652,6 +637,13 @@ def get_default_permissions(role):
 def load_permissions(user_id):
     conn = get_conn()
     cur = conn.cursor()
+    # ✅ حماية: التحقق من وجود عمود permissions
+    cur.execute("PRAGMA table_info(users)")
+    user_columns = [col[1] for col in cur.fetchall()]
+    if 'permissions' not in user_columns:
+        # إضافة العمود إذا لم يكن موجوداً
+        cur.execute("ALTER TABLE users ADD COLUMN permissions TEXT DEFAULT '{}'")
+        conn.commit()
     cur.execute("SELECT role, permissions FROM users WHERE id = ?", (user_id,))
     result = cur.fetchone()
     conn.close()
@@ -673,6 +665,11 @@ def load_permissions(user_id):
 def save_permissions(user_id, permissions):
     conn = get_conn()
     cur = conn.cursor()
+    # ✅ تأكد من وجود العمود
+    cur.execute("PRAGMA table_info(users)")
+    user_columns = [col[1] for col in cur.fetchall()]
+    if 'permissions' not in user_columns:
+        cur.execute("ALTER TABLE users ADD COLUMN permissions TEXT DEFAULT '{}'")
     cur.execute("UPDATE users SET permissions = ? WHERE id = ?", (json.dumps(permissions), user_id))
     conn.commit()
     conn.close()
@@ -1296,7 +1293,7 @@ elif menu == "المستأجرين":
                             else:
                                 st.session_state['confirm_delete_tenant'] = tenant_id
                                 st.warning("اضغط مرة أخرى لتأكيد الحذف")
-                elif has_permission(current_user_id, "المستأجرين_تعديل") == False and has_permission(current_user_id, "المستأجرين_عرض"):
+                else:
                     st.info("صلاحيتك للعرض فقط")
                 alerts = get_unread_alerts(tenant_id)
                 if alerts:
