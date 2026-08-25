@@ -558,8 +558,7 @@ PAGE_KEYS = [
     "العقارات",
     "العقود",
     "الدفعات",
-    "صفحة السداد",
-    "سندات القبض",
+    "سندات القبض",   # تم دمج صفحة السداد وسندات القبض
     "التقارير",
     "المستخدمون",
     "الإعدادات",
@@ -576,7 +575,6 @@ def get_default_permissions(role):
             "العقارات": True,
             "العقود": True,
             "الدفعات": True,
-            "صفحة السداد": True,
             "سندات القبض": True,
             "التقارير": True,
             "المستخدمون": False,
@@ -758,7 +756,7 @@ if not st.session_state.logged_in:
     st.markdown("</div>", unsafe_allow_html=True)
     st.stop()
 
-# ---------- عرض التطبيق بعد تسجيل الدخول ----------
+# ---------- بعد تسجيل الدخول ----------
 user_info = st.session_state.user_info
 current_user_id = user_info['id']
 current_role = user_info['role']
@@ -1505,13 +1503,13 @@ elif menu == "العقود":
             else:
                 st.warning("لا تملك صلاحية الإضافة")
 
-# ================== الدفعات ==================
+# ================== الدفعات (عرض وتعديل فقط) ==================
 elif menu == "الدفعات":
     st.subheader("💰 متابعة الدفعات")
     if not has_permission(current_user_id, "الدفعات"):
         st.error("لا تملك صلاحية الوصول لهذه الصفحة")
     else:
-        tab1, tab2, tab3 = st.tabs(["عرض الدفعات", "تسجيل دفعة", "تعديل دفعة"])
+        tab1, tab2 = st.tabs(["عرض الدفعات", "تعديل دفعة"])
         with tab1:
             status_filter = st.selectbox("فلتر الحالة", ["الكل", "مستحق", "مدفوع", "متأخر", "جزئي"])
             df_payments = load_payments(status_filter)
@@ -1537,46 +1535,6 @@ elif menu == "الدفعات":
             else:
                 st.info("لا توجد دفعات")
         with tab2:
-            if has_permission(current_user_id, "الدفعات") and (current_role == 'مدير' or current_role == 'محاسب'):
-                df_payments = load_payments()
-                if not df_payments.empty:
-                    payment_id = st.selectbox("اختر دفعة لتسجيل سداد", df_payments["الرقم"].tolist())
-                    if payment_id:
-                        conn = get_conn()
-                        cur = conn.cursor()
-                        cur.execute("SELECT amount, paid_amount, tenant_id, contract_id FROM payments WHERE id = ?", (payment_id,))
-                        pay = cur.fetchone()
-                        remaining = pay[0] - pay[1]
-                        with st.form("pay_form"):
-                            amount_paid = st.number_input("المبلغ المدفوع", min_value=0.0, max_value=remaining, step=100.0)
-                            pay_date = st.date_input("تاريخ السداد")
-                            method = st.selectbox("طريقة السداد", ["نقدي", "تحويل بنكي", "شيك", "دفع في المنصة"])
-                            attachment = st.file_uploader("مرفق السداد", type=["pdf", "png", "jpg", "jpeg"])
-                            if st.form_submit_button("تسجيل"):
-                                new_paid = pay[1] + amount_paid
-                                status = "مدفوع" if new_paid >= pay[0] else "جزئي" if new_paid > 0 else "مستحق"
-                                file_bytes = None
-                                if attachment is not None:
-                                    file_bytes = attachment.read()
-                                cur.execute(
-                                    "UPDATE payments SET paid_amount = ?, paid_date = ?, status = ?, attachment = ? WHERE id = ?",
-                                    (new_paid, pay_date.isoformat(), status, file_bytes, payment_id)
-                                )
-                                receipt_number = generate_receipt_number()
-                                cur.execute('''
-                                    INSERT INTO receipts (receipt_number, tenant_id, contract_id, payment_id, amount, receipt_date, payment_method, attachment)
-                                    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-                                ''', (receipt_number, pay[2], pay[3], payment_id, amount_paid, pay_date.isoformat(), method, file_bytes))
-                                conn.commit()
-                                conn.close()
-                                st.cache_data.clear()
-                                st.success("تم تسجيل السداد")
-                                st.rerun()
-                else:
-                    st.info("لا توجد دفعات")
-            else:
-                st.warning("لا تملك صلاحية تسجيل الدفعات")
-        with tab3:
             if current_role == 'مدير':
                 df_payments = load_payments()
                 if not df_payments.empty:
@@ -1601,15 +1559,15 @@ elif menu == "الدفعات":
             else:
                 st.warning("لا تملك صلاحية تعديل الدفعات")
 
-# ================== صفحة السداد وسندات القبض ==================
-elif menu == "صفحة السداد":
-    st.subheader("💳 صفحة السداد وسجل سندات القبض")
-    if not has_permission(current_user_id, "صفحة السداد"):
+# ================== سندات القبض (تسجيل سداد + سجل) ==================
+elif menu == "سندات القبض":
+    st.subheader("🧾 سندات القبض")
+    if not has_permission(current_user_id, "سندات القبض"):
         st.error("لا تملك صلاحية الوصول لهذه الصفحة")
     else:
         tab1, tab2 = st.tabs(["تسجيل سداد", "سجل سندات القبض"])
         with tab1:
-            if has_permission(current_user_id, "صفحة السداد") and (current_role == 'مدير' or current_role == 'محاسب'):
+            if current_role == 'مدير' or current_role == 'محاسب':
                 df_tenants = load_tenants()
                 if df_tenants.empty:
                     st.warning("لا يوجد مستأجرين")
@@ -1672,50 +1630,47 @@ elif menu == "صفحة السداد":
             else:
                 st.warning("لا تملك صلاحية تسجيل السداد")
         with tab2:
-            if has_permission(current_user_id, "سندات القبض"):
-                df_receipts = load_receipts()
-                if not df_receipts.empty:
-                    display_dataframe_with_reorder(df_receipts.drop(columns=["المرفق"]), "receipts")
-                    receipt_id = st.selectbox("اختر سند", df_receipts["الرقم"], format_func=lambda x: f"{df_receipts[df_receipts['الرقم']==x]['رقم السند'].iloc[0]}")
-                    if receipt_id:
-                        col1, col2, col3 = st.columns(3)
-                        with col1:
-                            pdf_data = print_receipt(receipt_id)
-                            if pdf_data:
-                                st.download_button("طباعة السند", data=pdf_data, file_name=f"receipt_{receipt_id}.pdf", mime="application/pdf")
-                        with col2:
-                            conn = get_conn()
-                            cur = conn.cursor()
-                            cur.execute("SELECT attachment FROM receipts WHERE id = ?", (receipt_id,))
-                            att = cur.fetchone()
-                            conn.close()
-                            if att and att[0]:
-                                st.download_button("تحميل المرفق", data=att[0], file_name=f"receipt_{receipt_id}_attachment.pdf", mime="application/octet-stream")
-                        with col3:
-                            if current_role == 'مدير':
-                                if st.button("تعديل المبلغ"):
-                                    st.session_state['edit_receipt_id'] = receipt_id
+            df_receipts = load_receipts()
+            if not df_receipts.empty:
+                display_dataframe_with_reorder(df_receipts.drop(columns=["المرفق"]), "receipts")
+                receipt_id = st.selectbox("اختر سند", df_receipts["الرقم"], format_func=lambda x: f"{df_receipts[df_receipts['الرقم']==x]['رقم السند'].iloc[0]}")
+                if receipt_id:
+                    col1, col2, col3 = st.columns(3)
+                    with col1:
+                        pdf_data = print_receipt(receipt_id)
+                        if pdf_data:
+                            st.download_button("طباعة السند", data=pdf_data, file_name=f"receipt_{receipt_id}.pdf", mime="application/pdf")
+                    with col2:
+                        conn = get_conn()
+                        cur = conn.cursor()
+                        cur.execute("SELECT attachment FROM receipts WHERE id = ?", (receipt_id,))
+                        att = cur.fetchone()
+                        conn.close()
+                        if att and att[0]:
+                            st.download_button("تحميل المرفق", data=att[0], file_name=f"receipt_{receipt_id}_attachment.pdf", mime="application/octet-stream")
+                    with col3:
+                        if current_role == 'مدير':
+                            if st.button("تعديل المبلغ"):
+                                st.session_state['edit_receipt_id'] = receipt_id
+                                st.rerun()
+                    if 'edit_receipt_id' in st.session_state and st.session_state['edit_receipt_id'] == receipt_id and current_role == 'مدير':
+                        conn = get_conn()
+                        cur = conn.cursor()
+                        cur.execute("SELECT amount FROM receipts WHERE id = ?", (receipt_id,))
+                        current_amount = cur.fetchone()[0]
+                        conn.close()
+                        with st.form("edit_receipt_form"):
+                            new_amount = st.number_input("المبلغ الجديد", min_value=0.0, step=100.0, value=float(current_amount))
+                            if st.form_submit_button("حفظ التعديل"):
+                                success, message = update_receipt_amount(receipt_id, new_amount)
+                                if success:
+                                    st.success(message)
+                                    st.session_state['edit_receipt_id'] = None
                                     st.rerun()
-                        if 'edit_receipt_id' in st.session_state and st.session_state['edit_receipt_id'] == receipt_id and current_role == 'مدير':
-                            conn = get_conn()
-                            cur = conn.cursor()
-                            cur.execute("SELECT amount FROM receipts WHERE id = ?", (receipt_id,))
-                            current_amount = cur.fetchone()[0]
-                            conn.close()
-                            with st.form("edit_receipt_form"):
-                                new_amount = st.number_input("المبلغ الجديد", min_value=0.0, step=100.0, value=float(current_amount))
-                                if st.form_submit_button("حفظ التعديل"):
-                                    success, message = update_receipt_amount(receipt_id, new_amount)
-                                    if success:
-                                        st.success(message)
-                                        st.session_state['edit_receipt_id'] = None
-                                        st.rerun()
-                                    else:
-                                        st.error(message)
-                else:
-                    st.info("لا توجد سندات قبض")
+                                else:
+                                    st.error(message)
             else:
-                st.warning("لا تملك صلاحية عرض سندات القبض")
+                st.info("لا توجد سندات قبض")
 
 # ================== التقارير ==================
 elif menu == "التقارير":
@@ -1723,8 +1678,318 @@ elif menu == "التقارير":
     if not has_permission(current_user_id, "التقارير"):
         st.error("لا تملك صلاحية الوصول لهذه الصفحة")
     else:
-        # ... (نفس منطق التقارير السابق)
-        st.info("التقارير تعمل")
+        report_type = st.radio("اختر التقرير", [
+            "كشف حساب مستأجر",
+            "الدفعات المستحقة بين تاريخين",
+            "تقرير الإيرادات",
+            "تقرير الضرائب"
+        ])
+        cal_choice = st.radio("نوع التاريخ", ["ميلادي", "هجري"], horizontal=True)
+
+        if report_type == "كشف حساب مستأجر":
+            df_tenants = load_tenants()
+            if df_tenants.empty:
+                st.info("لا يوجد مستأجرين")
+            else:
+                regions = df_tenants["المنطقة"].dropna().unique().tolist()
+                region_filter = st.selectbox("المنطقة", ["الكل"] + regions)
+                if region_filter != "الكل":
+                    filtered_tenants = df_tenants[df_tenants["المنطقة"] == region_filter]
+                else:
+                    filtered_tenants = df_tenants
+                if filtered_tenants.empty:
+                    st.warning("لا يوجد مستأجرين في هذه المنطقة")
+                else:
+                    tenant_id = st.selectbox("اختر المستأجر", filtered_tenants["الرقم"], format_func=lambda x: filtered_tenants[filtered_tenants["الرقم"]==x]["الاسم"].iloc[0])
+                    col_from, col_to = st.columns(2)
+                    with col_from:
+                        if cal_choice == "هجري":
+                            hijri_from = st.text_input("من تاريخ هجري (يوم-شهر-سنة)", "01-01-1445")
+                            try:
+                                from_date = hijri_to_gregorian(hijri_from)
+                            except:
+                                st.error("صيغة التاريخ الهجري غير صحيحة")
+                                st.stop()
+                        else:
+                            from_date = st.date_input("من تاريخ", value=date.today().replace(day=1))
+                    with col_to:
+                        if cal_choice == "هجري":
+                            hijri_to = st.text_input("إلى تاريخ هجري (يوم-شهر-سنة)", "30-12-1445")
+                            try:
+                                to_date = hijri_to_gregorian(hijri_to)
+                            except:
+                                st.error("صيغة التاريخ الهجري غير صحيحة")
+                                st.stop()
+                        else:
+                            to_date = st.date_input("إلى تاريخ", value=date.today())
+                    conn = get_conn()
+                    cur = conn.cursor()
+                    cur.execute("SELECT name, region FROM tenants WHERE id = ?", (tenant_id,))
+                    tenant_name, tenant_region = cur.fetchone()
+                    cur.execute('''
+                        SELECT c.contract_number FROM contracts c 
+                        WHERE c.tenant_id = ? AND c.status='نشط'
+                        LIMIT 1
+                    ''', (tenant_id,))
+                    contract_row = cur.fetchone()
+                    contract_no = contract_row[0] if contract_row else "لا يوجد"
+                    cur.execute('''
+                        SELECT id, due_date, amount, paid_amount, (amount - paid_amount) as remaining, status, paid_date, attachment
+                        FROM payments WHERE tenant_id = ? AND due_date BETWEEN ? AND ?
+                        ORDER BY due_date
+                    ''', (tenant_id, from_date.isoformat(), to_date.isoformat()))
+                    payments = cur.fetchall()
+                    cur.execute('''
+                        SELECT receipt_number, amount, receipt_date, payment_method, attachment
+                        FROM receipts WHERE tenant_id = ? AND receipt_date BETWEEN ? AND ?
+                        ORDER BY receipt_date DESC
+                    ''', (tenant_id, from_date.isoformat(), to_date.isoformat()))
+                    receipts = cur.fetchall()
+                    conn.close()
+
+                    st.markdown(f"### كشف حساب: {tenant_name}")
+                    st.write(f"**المنطقة:** {tenant_region or 'غير محدد'} | **رقم العقد:** {contract_no}")
+                    if cal_choice == "هجري":
+                        st.write(f"**الفترة:** من {from_date} إلى {to_date} هـ")
+                    else:
+                        st.write(f"**الفترة:** من {from_date} إلى {to_date} م")
+
+                    if payments:
+                        for pay in payments:
+                            pay_id, due, amount, paid, remaining, status, paid_date, attachment = pay
+                            with st.expander(f"📅 تاريخ الاستحقاق: {due} | المبلغ: {format_currency(amount)} | المدفوع: {format_currency(paid)} | المتبقي: {format_currency(remaining)} | الحالة: {status}"):
+                                if paid > 0 and attachment is not None:
+                                    st.download_button(
+                                        label="تحميل مرفق السداد",
+                                        data=attachment,
+                                        file_name=f"payment_{pay_id}_attachment.pdf",
+                                        mime="application/octet-stream"
+                                    )
+                                else:
+                                    st.write("لا يوجد مرفق لهذه الدفعة.")
+                        total_amount = sum(p[2] for p in payments)
+                        total_paid = sum(p[3] for p in payments)
+                        st.write(f"**إجمالي المستحق:** {format_currency(total_amount)}")
+                        st.write(f"**إجمالي المدفوع:** {format_currency(total_paid)}")
+                        st.write(f"**المتبقي:** {format_currency(total_amount - total_paid)}")
+                    else:
+                        st.info("لا توجد دفعات في هذه الفترة")
+
+                    st.markdown("### سندات القبض")
+                    if receipts:
+                        for rec in receipts:
+                            receipt_no, amount, rec_date, method, attachment = rec
+                            with st.expander(f"🧾 سند: {receipt_no} | المبلغ: {format_currency(amount)} | التاريخ: {rec_date} | الطريقة: {method}"):
+                                if attachment is not None:
+                                    st.download_button(
+                                        label="تحميل المرفق",
+                                        data=attachment,
+                                        file_name=f"receipt_{receipt_no}_attachment.pdf",
+                                        mime="application/octet-stream"
+                                    )
+                                else:
+                                    st.write("لا يوجد مرفق.")
+                    else:
+                        st.info("لا توجد سندات في هذه الفترة")
+
+                    if payments:
+                        df_payments_export = pd.DataFrame(
+                            [(p[1], p[2], p[3], p[2]-p[3], p[5], p[6]) for p in payments],
+                            columns=["تاريخ الاستحقاق", "المبلغ", "المدفوع", "المتبقي", "الحالة", "تاريخ السداد"]
+                        )
+                        output = io.BytesIO()
+                        with pd.ExcelWriter(output, engine='xlsxwriter') as writer:
+                            df_payments_export.to_excel(writer, sheet_name='الدفعات', index=False)
+                            if receipts:
+                                df_receipts_export = pd.DataFrame(
+                                    [(r[0], r[1], r[2], r[3]) for r in receipts],
+                                    columns=["رقم السند", "المبلغ", "التاريخ", "الطريقة"]
+                                )
+                                df_receipts_export.to_excel(writer, sheet_name='سندات', index=False)
+                        st.download_button("تحميل Excel", data=output.getvalue(), file_name=f"كشف_حساب_{tenant_name}_{from_date}_to_{to_date}.xlsx")
+
+                        extra_info = f"المنطقة: {tenant_region or 'غير محدد'} - رقم العقد: {contract_no}"
+                        pdf_title = f"كشف حساب {tenant_name} من {from_date} إلى {to_date}"
+                        export_df_to_pdf(df_payments_export, pdf_title, f"كشف_حساب_{tenant_name}_{from_date}_to_{to_date}.pdf", extra_info=extra_info)
+
+        elif report_type == "الدفعات المستحقة بين تاريخين":
+            st.markdown("### تقرير الدفعات المستحقة بين تاريخين")
+            if cal_choice == "هجري":
+                col1, col2 = st.columns(2)
+                with col1:
+                    hijri_from = st.text_input("من تاريخ هجري (يوم-شهر-سنة)", "01-01-1445")
+                with col2:
+                    hijri_to = st.text_input("إلى تاريخ هجري (يوم-شهر-سنة)", "30-12-1445")
+                try:
+                    from_date = hijri_to_gregorian(hijri_from)
+                    to_date = hijri_to_gregorian(hijri_to)
+                except:
+                    st.error("صيغة التاريخ الهجري غير صحيحة")
+                    st.stop()
+            else:
+                col1, col2 = st.columns(2)
+                with col1:
+                    from_date = st.date_input("من تاريخ", value=date.today().replace(day=1))
+                with col2:
+                    to_date = st.date_input("إلى تاريخ", value=date.today())
+            tenant_filter = st.selectbox("اختر مستأجر (اختياري)", ["الكل"] + load_tenants()["الاسم"].tolist())
+            region_filter = st.selectbox("المنطقة", ["الكل"] + load_tenants()["المنطقة"].dropna().unique().tolist())
+
+            conn = get_conn()
+            cur = conn.cursor()
+            query = '''
+                SELECT t.name as 'المستأجر', p.name as 'العقار', pay.due_date as 'تاريخ الاستحقاق', 
+                       pay.amount as 'المبلغ', pay.paid_amount as 'المدفوع',
+                       (pay.amount - pay.paid_amount) as 'المتبقي', pay.status as 'الحالة',
+                       t.region as 'المنطقة'
+                FROM payments pay
+                JOIN tenants t ON pay.tenant_id = t.id
+                JOIN contracts c ON pay.contract_id = c.id
+                JOIN properties p ON c.property_id = p.id
+                WHERE pay.due_date BETWEEN ? AND ?
+            '''
+            params = [from_date.isoformat(), to_date.isoformat()]
+            if tenant_filter != "الكل":
+                query += " AND t.name = ?"
+                params.append(tenant_filter)
+            if region_filter != "الكل":
+                query += " AND t.region = ?"
+                params.append(region_filter)
+            query += " ORDER BY pay.due_date"
+            cur.execute(query, params)
+            dues = cur.fetchall()
+            conn.close()
+
+            if dues:
+                df = pd.DataFrame(dues, columns=["المستأجر", "العقار", "تاريخ الاستحقاق", "المبلغ", "المدفوع", "المتبقي", "الحالة", "المنطقة"])
+                display_dataframe_with_reorder(df.copy(), "report_due")
+                total_amount = sum(d[3] for d in dues)
+                total_paid = sum(d[4] for d in dues)
+                st.write(f"**إجمالي المستحق:** {format_currency(total_amount)}")
+                st.write(f"**إجمالي المدفوع:** {format_currency(total_paid)}")
+                st.write(f"**إجمالي المتبقي:** {format_currency(total_amount - total_paid)}")
+                output = io.BytesIO()
+                with pd.ExcelWriter(output, engine='xlsxwriter') as writer:
+                    df.to_excel(writer, index=False)
+                st.download_button("تحميل Excel", data=output.getvalue(), file_name=f"مستحقات_{from_date}_to_{to_date}.xlsx")
+                export_df_to_pdf(df, f"مستحقات {from_date} إلى {to_date}", f"مستحقات_{from_date}_to_{to_date}.pdf")
+            else:
+                st.info("لا توجد مستحقات في هذه الفترة")
+
+        elif report_type == "تقرير الإيرادات":
+            st.markdown("### تقرير الإيرادات")
+            if cal_choice == "هجري":
+                col1, col2 = st.columns(2)
+                with col1:
+                    hijri_from = st.text_input("من تاريخ هجري (يوم-شهر-سنة)", "01-01-1445")
+                with col2:
+                    hijri_to = st.text_input("إلى تاريخ هجري (يوم-شهر-سنة)", "30-12-1445")
+                try:
+                    from_date = hijri_to_gregorian(hijri_from)
+                    to_date = hijri_to_gregorian(hijri_to)
+                except:
+                    st.error("صيغة التاريخ الهجري غير صحيحة")
+                    st.stop()
+            else:
+                col1, col2 = st.columns(2)
+                with col1:
+                    from_date = st.date_input("من تاريخ", value=date.today().replace(day=1))
+                with col2:
+                    to_date = st.date_input("إلى تاريخ", value=date.today())
+            conn = get_conn()
+            query = '''
+                SELECT r.receipt_date as 'التاريخ', t.name as 'المستأجر', r.receipt_number as 'رقم السند',
+                       r.amount as 'المبلغ', r.payment_method as 'طريقة السداد'
+                FROM receipts r
+                JOIN tenants t ON r.tenant_id = t.id
+                WHERE r.receipt_date BETWEEN ? AND ?
+                ORDER BY r.receipt_date
+            '''
+            df = pd.read_sql_query(query, conn, params=(from_date.isoformat(), to_date.isoformat()))
+            conn.close()
+            if not df.empty:
+                display_dataframe_with_reorder(df.copy(), "report_revenue")
+                total = df["المبلغ"].sum()
+                st.write(f"**إجمالي الإيرادات:** {format_currency(total)}")
+                output = io.BytesIO()
+                with pd.ExcelWriter(output, engine='xlsxwriter') as writer:
+                    df.to_excel(writer, index=False)
+                st.download_button("تحميل Excel", data=output.getvalue(), file_name=f"إيرادات_{from_date}_to_{to_date}.xlsx")
+                export_df_to_pdf(df, "تقرير الإيرادات", f"إيرادات_{from_date}_to_{to_date}.pdf")
+            else:
+                st.info("لا توجد إيرادات في هذه الفترة")
+
+        elif report_type == "تقرير الضرائب":
+            st.markdown("### تقرير الضرائب")
+            if cal_choice == "هجري":
+                col1, col2 = st.columns(2)
+                with col1:
+                    hijri_from = st.text_input("من تاريخ هجري (يوم-شهر-سنة)", "01-01-1445")
+                with col2:
+                    hijri_to = st.text_input("إلى تاريخ هجري (يوم-شهر-سنة)", "30-12-1445")
+                try:
+                    from_date = hijri_to_gregorian(hijri_from)
+                    to_date = hijri_to_gregorian(hijri_to)
+                except:
+                    st.error("صيغة التاريخ الهجري غير صحيحة")
+                    st.stop()
+            else:
+                col1, col2 = st.columns(2)
+                with col1:
+                    from_date = st.date_input("من تاريخ", value=date.today().replace(day=1))
+                with col2:
+                    to_date = st.date_input("إلى تاريخ", value=date.today())
+            conn = get_conn()
+            query = '''
+                SELECT t.name as 'اسم المستأجر',
+                       c.contract_number as 'رقم العقد',
+                       c.start_date as 'بداية الفترة',
+                       c.end_date as 'نهاية الفترة',
+                       pay.amount as 'المبلغ شامل الضريبة',
+                       c.tax_included as 'شامل الضريبة',
+                       c.tax_rate as 'نسبة الضريبة',
+                       r.payment_method as 'طريقة الدفع'
+                FROM payments pay
+                JOIN tenants t ON pay.tenant_id = t.id
+                JOIN contracts c ON pay.contract_id = c.id
+                LEFT JOIN receipts r ON r.payment_id = pay.id
+                WHERE pay.status = 'مدفوع' AND pay.paid_date BETWEEN ? AND ?
+                ORDER BY pay.paid_date
+            '''
+            df = pd.read_sql_query(query, conn, params=(from_date.isoformat(), to_date.isoformat()))
+            conn.close()
+            if not df.empty:
+                tax_values = []
+                for _, row in df.iterrows():
+                    amount = float(row['المبلغ شامل الضريبة'])
+                    tax_included = int(row['شامل الضريبة'])
+                    tax_rate = float(row['نسبة الضريبة'])
+                    if tax_included == 1:
+                        if tax_rate > 0:
+                            tax = amount * (tax_rate / (1 + tax_rate))
+                        else:
+                            tax = 0
+                    else:
+                        tax = amount * tax_rate
+                    tax_values.append(tax)
+                df['مبلغ الضريبة'] = tax_values
+                df['المبلغ غير شامل الضريبة'] = df['المبلغ شامل الضريبة'] - df['مبلغ الضريبة']
+                df = df[['اسم المستأجر', 'رقم العقد', 'بداية الفترة', 'نهاية الفترة',
+                         'المبلغ شامل الضريبة', 'نسبة الضريبة', 'مبلغ الضريبة', 'المبلغ غير شامل الضريبة', 'طريقة الدفع']]
+                df_display, selected_cols = display_dataframe_with_reorder(df.copy(), "report_tax")
+                total_amount = df['المبلغ شامل الضريبة'].sum()
+                total_tax = df['مبلغ الضريبة'].sum()
+                total_net = df['المبلغ غير شامل الضريبة'].sum()
+                st.write(f"**إجمالي المبلغ شامل الضريبة:** {format_currency(total_amount)}")
+                st.write(f"**إجمالي مبلغ الضريبة:** {format_currency(total_tax)}")
+                st.write(f"**إجمالي المبلغ غير شامل الضريبة:** {format_currency(total_net)}")
+                output = io.BytesIO()
+                with pd.ExcelWriter(output, engine='xlsxwriter') as writer:
+                    df_display.to_excel(writer, index=False)
+                st.download_button("تحميل Excel", data=output.getvalue(), file_name=f"ضرائب_{from_date}_to_{to_date}.xlsx")
+                export_tax_pdf(df_display, "تقرير الضرائب", f"ضرائب_{from_date}_to_{to_date}.pdf", columns_order=selected_cols)
+            else:
+                st.info("لا توجد دفعات مدفوعة بالكامل في هذه الفترة")
 
 # ================== المستخدمون ==================
 elif menu == "المستخدمون":
