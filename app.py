@@ -600,87 +600,53 @@ def init_db():
 init_db()
 
 # ---------- دوال الصلاحيات ----------
-PAGE_KEYS = [
+    PAGE_KEYS = [
     "لوحة التحكم",
-    "المستأجرين",
-    "العقارات",
-    "العقود",
-    "الدفعات",
-    "صفحة السداد",
-    "سندات القبض",
+    "المستأجرين_عرض",
+    "المستأجرين_تعديل",
+    "العقارات_عرض",
+    "العقارات_تعديل",
+    "العقود_عرض",
+    "العقود_تعديل",
+    "الدفعات_عرض",
+    "الدفعات_تسجيل",
+    "الدفعات_تعديل",
+    "صفحة السداد_تسجيل",
+    "سندات القبض_عرض",
+    "سندات القبض_تعديل",
     "التقارير",
     "المستخدمون",
     "الإعدادات",
     "نسخ احتياطي"
 ]
-
 def get_default_permissions(role):
     if role == 'مدير':
+        # المدير يملك كل الصلاحيات
         return {page: True for page in PAGE_KEYS}
     elif role == 'محاسب':
+        # المحاسب: عرض وتعديل بعض الصفحات، تسجيل دفعات، عدم تعديل سندات
         return {
             "لوحة التحكم": True,
-            "المستأجرين": True,
-            "العقارات": True,
-            "العقود": True,
-            "الدفعات": True,
-            "صفحة السداد": True,
-            "سندات القبض": False,
+            "المستأجرين_عرض": True,
+            "المستأجرين_تعديل": True,
+            "العقارات_عرض": True,
+            "العقارات_تعديل": True,
+            "العقود_عرض": True,
+            "العقود_تعديل": True,
+            "الدفعات_عرض": True,
+            "الدفعات_تسجيل": True,
+            "الدفعات_تعديل": False,
+            "صفحة السداد_تسجيل": True,
+            "سندات القبض_عرض": False,
+            "سندات القبض_تعديل": False,
             "التقارير": True,
             "المستخدمون": False,
             "الإعدادات": False,
             "نسخ احتياطي": False
         }
     else:  # مشاهد
+        # المشاهد: لا يملك أي صلاحية
         return {page: False for page in PAGE_KEYS}
-
-def load_permissions(user_id):
-    conn = get_conn()
-    cur = conn.cursor()
-    # ✅ حماية: التحقق من وجود عمود permissions
-    cur.execute("PRAGMA table_info(users)")
-    user_columns = [col[1] for col in cur.fetchall()]
-    if 'permissions' not in user_columns:
-        # إضافة العمود إذا لم يكن موجوداً
-        cur.execute("ALTER TABLE users ADD COLUMN permissions TEXT DEFAULT '{}'")
-        conn.commit()
-    cur.execute("SELECT role, permissions FROM users WHERE id = ?", (user_id,))
-    result = cur.fetchone()
-    conn.close()
-    if not result:
-        return {}
-    role, permissions_json = result
-    permissions = {}
-    try:
-        permissions = json.loads(permissions_json or '{}')
-    except:
-        permissions = {}
-    # دمج الصلاحيات الافتراضية مع المخزنة
-    default_perms = get_default_permissions(role)
-    for key in PAGE_KEYS:
-        if key not in permissions:
-            permissions[key] = default_perms.get(key, False)
-    return permissions
-
-def save_permissions(user_id, permissions):
-    conn = get_conn()
-    cur = conn.cursor()
-    # ✅ تأكد من وجود العمود
-    cur.execute("PRAGMA table_info(users)")
-    user_columns = [col[1] for col in cur.fetchall()]
-    if 'permissions' not in user_columns:
-        cur.execute("ALTER TABLE users ADD COLUMN permissions TEXT DEFAULT '{}'")
-    cur.execute("UPDATE users SET permissions = ? WHERE id = ?", (json.dumps(permissions), user_id))
-    conn.commit()
-    conn.close()
-    st.cache_data.clear()
-
-def has_permission(user_id, page):
-    if not user_id:
-        return False
-    permissions = load_permissions(user_id)
-    return permissions.get(page, False)
-
 # ---------- دوال الإعدادات ----------
 def load_settings():
     conn = get_conn()
