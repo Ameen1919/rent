@@ -17,6 +17,7 @@ from reportlab.pdfbase import pdfmetrics
 from reportlab.pdfbase.ttfonts import TTFont
 import base64
 import hashlib
+import json
 
 # ---------- إعداد الصفحة ----------
 st.set_page_config(page_title="نظام إدارة الإيجارات", page_icon="🏢", layout="wide")
@@ -82,7 +83,7 @@ def draw_centered_multiline(c, text_lines, x_center, y, font_name, font_size):
     for i, line in enumerate(text_lines):
         c.drawCentredString(x_center, start_y - i * line_height, reshape_arabic_text(line))
 
-# ---------- دالة تصدير PDF عامة (مع ترقيم وخطوط وإجمالي) ----------
+# ---------- دالة تصدير PDF عامة ----------
 def export_df_to_pdf(df, title, file_name, columns_order=None, extra_info=None):
     if columns_order:
         df = df[columns_order]
@@ -109,7 +110,6 @@ def export_df_to_pdf(df, title, file_name, columns_order=None, extra_info=None):
     c.setFont(font_name, 16)
     c.drawCentredString(width/2, height-20, reshape_arabic_text(title))
 
-    # معلومات إضافية (مثل المنطقة ورقم العقد)
     y_extra = height - 50
     if extra_info:
         c.setFillColor(colors.black)
@@ -117,7 +117,6 @@ def export_df_to_pdf(df, title, file_name, columns_order=None, extra_info=None):
         c.drawCentredString(width/2, y_extra, reshape_arabic_text(extra_info))
         y_extra -= 20
 
-    # جدول
     actual_columns = list(df.columns)
     headers = ["م"] + actual_columns
 
@@ -266,7 +265,6 @@ def export_tax_pdf(df, title, file_name, columns_order=None):
     actual_columns = list(df.columns)
     headers = ["م"] + actual_columns
 
-    # تعديل عرض الأعمدة ليكون أضيق
     col_widths = []
     for col in headers:
         if col == "م":
@@ -324,7 +322,6 @@ def export_tax_pdf(df, title, file_name, columns_order=None):
             c.showPage()
             c.setFont(font_name, 8)
             y = height - 50
-            # إعادة رؤوس الصفحة الجديدة
             c.setFont(font_name, 7)
             c.setFillColor(colors.HexColor("#f0f0f0"))
             c.rect(x_start, y-18, total_width, 28, fill=1, stroke=0)
@@ -407,6 +404,7 @@ def export_tax_pdf(df, title, file_name, columns_order=None):
     st.download_button("تحميل PDF", data=buffer, file_name=file_name, mime="application/pdf")
 
 def print_receipt(receipt_id):
+    """توليد PDF لسند قبض واحد"""
     conn = get_conn()
     cur = conn.cursor()
     cur.execute('''
@@ -484,6 +482,7 @@ def init_db():
             username TEXT UNIQUE NOT NULL,
             password_hash TEXT,
             role TEXT DEFAULT 'مشاهد',
+            permissions TEXT DEFAULT '{}',
             created_at TEXT DEFAULT CURRENT_TIMESTAMP
         )
     ''')
@@ -591,12 +590,82 @@ def init_db():
     cur.execute("CREATE INDEX IF NOT EXISTS idx_receipts_date ON receipts(receipt_date)")
     cur.execute("SELECT COUNT(*) FROM users")
     if cur.fetchone()[0] == 0:
-        cur.execute("INSERT INTO users (username, password_hash, role) VALUES (?, ?, ?)",
-                    ('admin', hashlib.sha256('admin123'.encode()).hexdigest(), 'مدير'))
+        cur.execute("INSERT INTO users (username, password_hash, role, permissions) VALUES (?, ?, ?, ?)",
+                    ('admin', hashlib.sha256('admin123'.encode()).hexdigest(), 'مدير', json.dumps({})))
     conn.commit()
     conn.close()
 
 init_db()
+
+# ---------- دوال الصلاحيات ----------
+PAGE_KEYS = [
+    "لوحة التحكم",
+    "المستأجرين",
+    "العقارات",
+    "العقود",
+    "الدفعات",
+    "صفحة السداد",
+    "سندات القبض",
+    "التقارير",
+    "المستخدمون",
+    "الإعدادات",
+    "نسخ احتياطي"
+]
+
+def get_default_permissions(role):
+    if role == 'مدير':
+        return {page: True for page in PAGE_KEYS}
+    elif role == 'محاسب':
+        return {
+            "لوحة التحكم": True,
+            "المستأجرين": True,
+            "العقارات": True,
+            "العقود": True,
+            "الدفعات": True,
+            "صفحة السداد": True,
+            "سندات القبض": False,
+            "التقارير": True,
+            "المستخدمون": False,
+            "الإعدادات": False,
+            "نسخ احتياطي": False
+        }
+    else:  # مشاهد
+        return {page: False for page in PAGE_KEYS}
+
+def load_permissions(user_id):
+    conn = get_conn()
+    cur = conn.cursor()
+    cur.execute("SELECT role, permissions FROM users WHERE id = ?", (user_id,))
+    result = cur.fetchone()
+    conn.close()
+    if not result:
+        return {}
+    role, permissions_json = result
+    permissions = {}
+    try:
+        permissions = json.loads(permissions_json or '{}')
+    except:
+        permissions = {}
+    # دمج الصلاحيات الافتراضية مع المخزنة
+    default_perms = get_default_permissions(role)
+    for key in PAGE_KEYS:
+        if key not in permissions:
+            permissions[key] = default_perms.get(key, False)
+    return permissions
+
+def save_permissions(user_id, permissions):
+    conn = get_conn()
+    cur = conn.cursor()
+    cur.execute("UPDATE users SET permissions = ? WHERE id = ?", (json.dumps(permissions), user_id))
+    conn.commit()
+    conn.close()
+    st.cache_data.clear()
+
+def has_permission(user_id, page):
+    if not user_id:
+        return False
+    permissions = load_permissions(user_id)
+    return permissions.get(page, False)
 
 # ---------- دوال الإعدادات ----------
 def load_settings():
@@ -748,13 +817,16 @@ if users:
     current_role = cur.fetchone()[0]
     conn.close()
     st.sidebar.markdown(f"**الدور:** {current_role}")
+    # تحميل صلاحيات المستخدم الحالي
+    user_permissions = load_permissions(current_user_id)
 else:
     current_role = "مدير"
     current_user_id = None
+    user_permissions = {}
 
 menu = st.sidebar.radio(
     "القائمة الرئيسية",
-    ["لوحة التحكم", "المستأجرين", "العقارات", "العقود", "الدفعات", "صفحة السداد", "سندات القبض", "التقارير", "المستخدمون", "الإعدادات", "نسخ احتياطي"]
+    PAGE_KEYS
 )
 
 # ---------- دوال مساعدة ----------
@@ -988,10 +1060,11 @@ def add_user(username, password, role):
         conn.close()
         return False, "اسم المستخدم موجود مسبقاً"
     password_hash = hashlib.sha256(password.encode()).hexdigest()
+    default_perms = get_default_permissions(role)
     cur.execute('''
-        INSERT INTO users (username, password_hash, role)
-        VALUES (?, ?, ?)
-    ''', (username, password_hash, role))
+        INSERT INTO users (username, password_hash, role, permissions)
+        VALUES (?, ?, ?, ?)
+    ''', (username, password_hash, role, json.dumps(default_perms)))
     conn.commit()
     conn.close()
     return True, "تم إضافة المستخدم بنجاح"
@@ -999,7 +1072,12 @@ def add_user(username, password, role):
 def update_user_role(user_id, new_role):
     conn = get_conn()
     cur = conn.cursor()
-    cur.execute("UPDATE users SET role = ? WHERE id = ?", (new_role, user_id))
+    cur.execute("SELECT role FROM users WHERE id = ?", (user_id,))
+    old_role = cur.fetchone()[0]
+    if old_role != new_role:
+        # إعادة تعيين الصلاحيات عند تغيير الدور
+        default_perms = get_default_permissions(new_role)
+        cur.execute("UPDATE users SET role = ?, permissions = ? WHERE id = ?", (new_role, json.dumps(default_perms), user_id))
     conn.commit()
     conn.close()
     st.cache_data.clear()
@@ -1039,8 +1117,38 @@ def update_payment(payment_id, due_date, amount, status, notes):
     conn.close()
     st.cache_data.clear()
 
+def update_receipt_amount(receipt_id, new_amount):
+    """تعديل مبلغ سند القبض وتحديث الدفعات المرتبطة"""
+    conn = get_conn()
+    cur = conn.cursor()
+    # الحصول على بيانات السند القديم
+    cur.execute("SELECT payment_id, amount FROM receipts WHERE id = ?", (receipt_id,))
+    receipt_data = cur.fetchone()
+    if not receipt_data:
+        conn.close()
+        return False, "السند غير موجود"
+    payment_id, old_amount = receipt_data
+    # تحديث مبلغ السند
+    cur.execute("UPDATE receipts SET amount = ? WHERE id = ?", (new_amount, receipt_id))
+    # تحديث الدفعة المرتبطة
+    if payment_id:
+        # استرجاع معلومات الدفعة
+        cur.execute("SELECT amount, paid_amount FROM payments WHERE id = ?", (payment_id,))
+        pay_data = cur.fetchone()
+        if pay_data:
+            # حساب المدفوع الجديد: نخصم القديم ونضيف الجديد
+            new_paid = pay_data[1] - old_amount + new_amount
+            if new_paid < 0:
+                new_paid = 0
+            status = "مدفوع" if new_paid >= pay_data[0] else "جزئي" if new_paid > 0 else "مستحق"
+            cur.execute("UPDATE payments SET paid_amount = ?, status = ? WHERE id = ?", (new_paid, status, payment_id))
+    conn.commit()
+    conn.close()
+    st.cache_data.clear()
+    return True, "تم تعديل السند بنجاح"
+
 # ================== لوحة التحكم ==================
-if menu == "لوحة التحكم":
+if menu == "لوحة التحكم" and has_permission(current_user_id, "لوحة التحكم"):
     st.subheader("📊 لوحة التحكم")
     df_tenants = load_tenants()
     df_contracts = load_contracts()
@@ -1087,6 +1195,8 @@ if menu == "لوحة التحكم":
         display_dataframe_with_reorder(upcoming_display, "upcoming")
     else:
         st.info("لا توجد دفعات مستحقة خلال 30 يوم.")
+elif menu != "لوحة التحكم" and not has_permission(current_user_id, menu):
+    st.error("لا تملك صلاحية الوصول إلى هذه الصفحة")
 
 # ================== المستأجرين ==================
 elif menu == "المستأجرين":
@@ -1105,6 +1215,15 @@ elif menu == "المستأجرين":
                 filtered_tenants = df_tenants
             if not filtered_tenants.empty:
                 display_dataframe_with_reorder(filtered_tenants, "tenants_filtered")
+                # أزرار تصدير
+                col_exp1, col_exp2 = st.columns(2)
+                with col_exp1:
+                    output = io.BytesIO()
+                    with pd.ExcelWriter(output, engine='xlsxwriter') as writer:
+                        filtered_tenants.to_excel(writer, index=False)
+                    st.download_button("تحميل Excel", data=output.getvalue(), file_name="المستأجرين.xlsx")
+                with col_exp2:
+                    export_df_to_pdf(filtered_tenants, "بيان المستأجرين", "المستأجرين.pdf")
                 tenant_dict = dict(zip(filtered_tenants["الاسم"], filtered_tenants["الرقم"]))
                 selected_name = st.selectbox("اختر مستأجر لعرض التفاصيل", list(tenant_dict.keys()))
                 tenant_id = tenant_dict[selected_name]
@@ -1139,7 +1258,7 @@ elif menu == "المستأجرين":
                     st.dataframe(df_tenant_contracts, use_container_width=True)
                 else:
                     st.info("لا توجد عقود لهذا المستأجر")
-                if current_role == "مدير":
+                if has_permission(current_user_id, "المستأجرين_تعديل"):
                     col_edit, col_del = st.columns(2)
                     with col_edit:
                         if st.button("تعديل بيانات المستأجر", key="edit_tenant_btn"):
@@ -1160,14 +1279,7 @@ elif menu == "المستأجرين":
                             else:
                                 st.session_state['confirm_delete_tenant'] = tenant_id
                                 st.warning("اضغط مرة أخرى لتأكيد الحذف")
-                elif current_role == "محاسب":
-                    col_edit, _ = st.columns(2)
-                    with col_edit:
-                        if st.button("تعديل بيانات المستأجر", key="edit_tenant_btn"):
-                            st.session_state['edit_tenant_id'] = tenant_id
-                            st.rerun()
-                    st.info("لا تملك صلاحية الحذف")
-                else:
+                elif has_permission(current_user_id, "المستأجرين_تعديل") == False and has_permission(current_user_id, "المستأجرين_عرض"):
                     st.info("صلاحيتك للعرض فقط")
                 alerts = get_unread_alerts(tenant_id)
                 if alerts:
@@ -1186,7 +1298,7 @@ elif menu == "المستأجرين":
                         st.write(f"- [{n[0]}] ({n[2]}) {n[1]} {icon}")
                 else:
                     st.write("لا توجد ملاحظات.")
-                if current_role in ["مدير", "محاسب"]:
+                if has_permission(current_user_id, "المستأجرين_تعديل"):
                     with st.form("add_note_form"):
                         note_text = st.text_area("ملاحظة جديدة")
                         priority = st.selectbox("الأهمية", ["عادية", "متوسطة", "عالية"])
@@ -1202,9 +1314,7 @@ elif menu == "المستأجرين":
         else:
             st.info("لا يوجد مستأجرين بعد")
     with tab2:
-        if current_role == "مشاهد":
-            st.warning("لا تملك صلاحية الإضافة أو التعديل")
-        else:
+        if has_permission(current_user_id, "المستأجرين_تعديل"):
             if 'edit_tenant_id' in st.session_state and st.session_state['edit_tenant_id']:
                 tenant_id = st.session_state['edit_tenant_id']
                 conn = get_conn()
@@ -1258,16 +1368,18 @@ elif menu == "المستأجرين":
                             st.rerun()
                         else:
                             st.error("الاسم مطلوب")
-    with tab3:
-        if current_role == "مشاهد":
-            st.warning("لا تملك صلاحية الاستيراد")
         else:
+            st.warning("لا تملك صلاحية الإضافة أو التعديل")
+    with tab3:
+        if has_permission(current_user_id, "المستأجرين_تعديل"):
             st.markdown("### استيراد المستأجرين من ملف Excel")
             st.info("يجب أن يحتوي الملف على الأعمدة التالية: الاسم (إجباري)، الهاتف، رقم الهوية / الإقامة، العنوان، المنطقة، ملاحظات")
             uploaded_file = st.file_uploader("اختر ملف Excel", type=["xlsx", "xls"])
             if uploaded_file is not None:
                 if st.button("بدء الاستيراد"):
                     import_tenants_from_excel(uploaded_file)
+        else:
+            st.warning("لا تملك صلاحية الاستيراد")
 
 # ================== العقارات ==================
 elif menu == "العقارات":
@@ -1285,7 +1397,16 @@ elif menu == "العقارات":
                 filtered_props = df_props
             if not filtered_props.empty:
                 display_dataframe_with_reorder(filtered_props, "properties_filtered")
-                if current_role == "مدير":
+                # أزرار تصدير
+                col_exp1, col_exp2 = st.columns(2)
+                with col_exp1:
+                    output = io.BytesIO()
+                    with pd.ExcelWriter(output, engine='xlsxwriter') as writer:
+                        filtered_props.to_excel(writer, index=False)
+                    st.download_button("تحميل Excel", data=output.getvalue(), file_name="العقارات.xlsx")
+                with col_exp2:
+                    export_df_to_pdf(filtered_props, "بيان العقارات", "العقارات.pdf")
+                if has_permission(current_user_id, "العقارات_تعديل"):
                     prop_id = st.selectbox("اختر عقار", filtered_props["الرقم"], format_func=lambda x: filtered_props[filtered_props["الرقم"]==x]["الاسم"].iloc[0])
                     col_edit, col_del = st.columns(2)
                     with col_edit:
@@ -1307,11 +1428,6 @@ elif menu == "العقارات":
                             else:
                                 st.session_state['confirm_delete_property'] = prop_id
                                 st.warning("اضغط مرة أخرى لتأكيد الحذف")
-                elif current_role == "محاسب":
-                    prop_id = st.selectbox("اختر عقار للتعديل", filtered_props["الرقم"], format_func=lambda x: filtered_props[filtered_props["الرقم"]==x]["الاسم"].iloc[0])
-                    if st.button("تعديل العقار", key="edit_prop_btn"):
-                        st.session_state['edit_property_id'] = prop_id
-                        st.rerun()
                 else:
                     st.info("صلاحيتك للعرض فقط")
             else:
@@ -1319,9 +1435,7 @@ elif menu == "العقارات":
         else:
             st.info("لا توجد عقارات")
     with tab2:
-        if current_role == "مشاهد":
-            st.warning("لا تملك صلاحية الإضافة أو التعديل")
-        else:
+        if has_permission(current_user_id, "العقارات_تعديل"):
             if 'edit_property_id' in st.session_state and st.session_state['edit_property_id']:
                 prop_id = st.session_state['edit_property_id']
                 conn = get_conn()
@@ -1373,6 +1487,8 @@ elif menu == "العقارات":
                             st.rerun()
                         else:
                             st.error("الاسم مطلوب")
+        else:
+            st.warning("لا تملك صلاحية الإضافة أو التعديل")
 
 # ================== العقود ==================
 elif menu == "العقود":
@@ -1391,7 +1507,7 @@ elif menu == "العقود":
                 filtered_contracts = df_contracts
             if not filtered_contracts.empty:
                 display_dataframe_with_reorder(filtered_contracts, "contracts_filtered")
-                if current_role == "مدير":
+                if has_permission(current_user_id, "العقود_تعديل"):
                     contract_id = st.selectbox("اختر عقد", filtered_contracts["الرقم"], format_func=lambda x: f"عقد رقم {x}")
                     col_edit, col_del = st.columns(2)
                     with col_edit:
@@ -1415,18 +1531,6 @@ elif menu == "العقود":
                     conn.close()
                     if file_data and file_data[0]:
                         st.download_button("تحميل ملف العقد", data=file_data[0], file_name=f"contract_{contract_id}.pdf", mime="application/octet-stream")
-                elif current_role == "محاسب":
-                    contract_id = st.selectbox("اختر عقد للتعديل", filtered_contracts["الرقم"], format_func=lambda x: f"عقد رقم {x}")
-                    if st.button("تعديل العقد", key="edit_contract_btn"):
-                        st.session_state['edit_contract_id'] = contract_id
-                        st.rerun()
-                    conn = get_conn()
-                    cur = conn.cursor()
-                    cur.execute("SELECT contract_file FROM contracts WHERE id = ?", (contract_id,))
-                    file_data = cur.fetchone()
-                    conn.close()
-                    if file_data and file_data[0]:
-                        st.download_button("تحميل ملف العقد", data=file_data[0], file_name=f"contract_{contract_id}.pdf", mime="application/octet-stream")
                 else:
                     st.info("صلاحيتك للعرض فقط")
             else:
@@ -1434,9 +1538,7 @@ elif menu == "العقود":
         else:
             st.info("لا توجد عقود")
     with tab2:
-        if current_role == "مشاهد":
-            st.warning("لا تملك صلاحية الإضافة أو التعديل")
-        else:
+        if has_permission(current_user_id, "العقود_تعديل"):
             df_tenants = load_tenants()
             df_props = load_properties()
             if df_tenants.empty or df_props.empty:
@@ -1538,6 +1640,8 @@ elif menu == "العقود":
                                 st.cache_data.clear()
                                 st.success("تم إنشاء العقد وجدولة الدفعات")
                                 st.rerun()
+        else:
+            st.warning("لا تملك صلاحية الإضافة أو التعديل")
 
 # ================== الدفعات ==================
 elif menu == "الدفعات":
@@ -1548,12 +1652,31 @@ elif menu == "الدفعات":
         status_filter = st.selectbox("فلتر الحالة", ["الكل", "مستحق", "مدفوع", "متأخر", "جزئي"])
         df_payments = load_payments(status_filter)
         if not df_payments.empty:
-            display_dataframe_with_reorder(df_payments.drop(columns=["المرفق"]), "payments")
+            # إضافة خانة بحث باسم المستأجر
+            search_payment = st.text_input("بحث باسم المستأجر", key="search_payment")
+            if search_payment:
+                mask = df_payments["المستأجر"].str.contains(search_payment, case=False, na=False)
+                filtered_payments = df_payments[mask]
+            else:
+                filtered_payments = df_payments
+            if not filtered_payments.empty:
+                display_dataframe_with_reorder(filtered_payments.drop(columns=["المرفق"]), "payments_filtered")
+                # أزرار تصدير
+                col_exp1, col_exp2 = st.columns(2)
+                with col_exp1:
+                    output = io.BytesIO()
+                    with pd.ExcelWriter(output, engine='xlsxwriter') as writer:
+                        filtered_payments.drop(columns=["المرفق"]).to_excel(writer, index=False)
+                    st.download_button("تحميل Excel", data=output.getvalue(), file_name="الدفعات_المفلترة.xlsx")
+                with col_exp2:
+                    export_df_to_pdf(filtered_payments.drop(columns=["المرفق"]), "بيان الدفعات", "الدفعات_المفلترة.pdf")
+            else:
+                st.info("لا توجد نتائج مطابقة للبحث")
         else:
-            st.info("لا توجد دفعات مطابقة")
+            st.info("لا توجد دفعات")
 
     with tab2:
-        if current_role in ["مدير", "محاسب"]:
+        if has_permission(current_user_id, "الدفعات_تسجيل"):
             df_payments = load_payments()
             if not df_payments.empty:
                 payment_id = st.selectbox("اختر دفعة لتسجيل سداد", df_payments["الرقم"].tolist())
@@ -1594,7 +1717,7 @@ elif menu == "الدفعات":
             st.info("لا تملك صلاحية تسجيل الدفعات")
 
     with tab3:
-        if current_role in ["مدير", "محاسب"]:
+        if has_permission(current_user_id, "الدفعات_تعديل"):
             df_payments = load_payments()
             if not df_payments.empty:
                 payment_id = st.selectbox("اختر دفعة للتعديل", df_payments["الرقم"].tolist())
@@ -1618,93 +1741,122 @@ elif menu == "الدفعات":
         else:
             st.info("لا تملك صلاحية تعديل الدفعات")
 
-# ================== صفحة السداد ==================
+# ================== صفحة السداد وسندات القبض ==================
 elif menu == "صفحة السداد":
-    st.subheader("💳 صفحة السداد")
-    if current_role in ["مدير", "محاسب"]:
-        df_tenants = load_tenants()
-        if df_tenants.empty:
-            st.warning("لا يوجد مستأجرين")
-        else:
-            tenant_id = st.selectbox("اختر المستأجر", df_tenants["الرقم"], format_func=lambda x: df_tenants[df_tenants["الرقم"]==x]["الاسم"].iloc[0])
-            today = date.today()
-            conn = get_conn()
-            cur = conn.cursor()
-            cur.execute('''
-                SELECT id, due_date, amount, paid_amount, (amount - paid_amount) as remaining
-                FROM payments
-                WHERE tenant_id = ? AND status != 'مدفوع' AND due_date <= ?
-                ORDER BY due_date
-            ''', (tenant_id, today.isoformat()))
-            dues = cur.fetchall()
-            conn.close()
-            if not dues:
-                st.info("لا توجد دفعات مستحقة لهذا المستأجر حتى اليوم")
+    st.subheader("💳 صفحة السداد وسجل سندات القبض")
+    tab1, tab2 = st.tabs(["تسجيل سداد", "سجل سندات القبض"])
+
+    with tab1:
+        if has_permission(current_user_id, "صفحة السداد_تسجيل"):
+            df_tenants = load_tenants()
+            if df_tenants.empty:
+                st.warning("لا يوجد مستأجرين")
             else:
-                df_dues = pd.DataFrame(dues, columns=["رقم الدفعة", "تاريخ الاستحقاق", "المبلغ", "المدفوع", "المتبقي"])
-                df_dues["المبلغ"] = df_dues["المبلغ"].apply(format_currency)
-                df_dues["المدفوع"] = df_dues["المدفوع"].apply(format_currency)
-                df_dues["المتبقي"] = df_dues["المتبقي"].apply(format_currency)
-                st.dataframe(df_dues, use_container_width=True)
+                tenant_id = st.selectbox("اختر المستأجر", df_tenants["الرقم"], format_func=lambda x: df_tenants[df_tenants["الرقم"]==x]["الاسم"].iloc[0])
+                today = date.today()
+                conn = get_conn()
+                cur = conn.cursor()
+                cur.execute('''
+                    SELECT id, due_date, amount, paid_amount, (amount - paid_amount) as remaining
+                    FROM payments
+                    WHERE tenant_id = ? AND status != 'مدفوع' AND due_date <= ?
+                    ORDER BY due_date
+                ''', (tenant_id, today.isoformat()))
+                dues = cur.fetchall()
+                conn.close()
+                if not dues:
+                    st.info("لا توجد دفعات مستحقة لهذا المستأجر حتى اليوم")
+                else:
+                    df_dues = pd.DataFrame(dues, columns=["رقم الدفعة", "تاريخ الاستحقاق", "المبلغ", "المدفوع", "المتبقي"])
+                    df_dues["المبلغ"] = df_dues["المبلغ"].apply(format_currency)
+                    df_dues["المدفوع"] = df_dues["المدفوع"].apply(format_currency)
+                    df_dues["المتبقي"] = df_dues["المتبقي"].apply(format_currency)
+                    st.dataframe(df_dues, use_container_width=True)
 
-                payment_ids = df_dues["رقم الدفعة"].tolist()
-                payment_id = st.selectbox("اختر الدفعة", payment_ids, format_func=lambda x: f"دفعة رقم {x} - المستحق {df_dues[df_dues['رقم الدفعة']==x]['المتبقي'].iloc[0]}")
-                if payment_id:
-                    remaining_amount = float(df_dues[df_dues["رقم الدفعة"] == payment_id]["المتبقي"].iloc[0].replace(",", ""))
-                    payment_date = st.date_input("تاريخ السداد", value=today)
-                    amount = st.number_input("المبلغ", min_value=0.0, max_value=remaining_amount, value=remaining_amount, step=100.0)
-                    method = st.selectbox("طريقة الدفع", ["نقدي", "تحويل بنكي", "شيك", "دفع في المنصة"])
-                    attachment = st.file_uploader("مرفق دليل الدفع (PDF/صورة)", type=["pdf", "png", "jpg", "jpeg"])
-                    if st.button("تسجيل السداد"):
-                        if amount <= 0:
-                            st.error("المبلغ يجب أن يكون أكبر من صفر")
-                        else:
-                            file_bytes = None
-                            if attachment is not None:
-                                file_bytes = attachment.read()
-                            conn = get_conn()
-                            cur = conn.cursor()
-                            cur.execute("SELECT amount, paid_amount, contract_id FROM payments WHERE id = ?", (payment_id,))
-                            pay_data = cur.fetchone()
-                            new_paid = pay_data[1] + amount
-                            status = "مدفوع" if new_paid >= pay_data[0] else "جزئي"
-                            cur.execute('''
-                                UPDATE payments SET paid_amount = ?, paid_date = ?, status = ?, attachment = ?
-                                WHERE id = ?
-                            ''', (new_paid, payment_date.isoformat(), status, file_bytes, payment_id))
-                            receipt_number = generate_receipt_number()
-                            cur.execute('''
-                                INSERT INTO receipts (receipt_number, tenant_id, contract_id, payment_id, amount, receipt_date, payment_method, attachment)
-                                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-                            ''', (receipt_number, tenant_id, pay_data[2], payment_id, amount, payment_date.isoformat(), method, file_bytes))
-                            conn.commit()
-                            conn.close()
-                            st.cache_data.clear()
-                            st.success(f"تم تسجيل سداد بمبلغ {format_currency(amount)}")
-                            st.rerun()
-    else:
-        st.warning("لا تملك صلاحية تسجيل السداد")
+                    payment_ids = df_dues["رقم الدفعة"].tolist()
+                    payment_id = st.selectbox("اختر الدفعة", payment_ids, format_func=lambda x: f"دفعة رقم {x} - المستحق {df_dues[df_dues['رقم الدفعة']==x]['المتبقي'].iloc[0]}")
+                    if payment_id:
+                        remaining_amount = float(df_dues[df_dues["رقم الدفعة"] == payment_id]["المتبقي"].iloc[0].replace(",", ""))
+                        payment_date = st.date_input("تاريخ السداد", value=today)
+                        amount = st.number_input("المبلغ", min_value=0.0, max_value=remaining_amount, value=remaining_amount, step=100.0)
+                        method = st.selectbox("طريقة الدفع", ["نقدي", "تحويل بنكي", "شيك", "دفع في المنصة"])
+                        attachment = st.file_uploader("مرفق دليل الدفع (PDF/صورة)", type=["pdf", "png", "jpg", "jpeg"])
+                        if st.button("تسجيل السداد"):
+                            if amount <= 0:
+                                st.error("المبلغ يجب أن يكون أكبر من صفر")
+                            else:
+                                file_bytes = None
+                                if attachment is not None:
+                                    file_bytes = attachment.read()
+                                conn = get_conn()
+                                cur = conn.cursor()
+                                cur.execute("SELECT amount, paid_amount, contract_id FROM payments WHERE id = ?", (payment_id,))
+                                pay_data = cur.fetchone()
+                                new_paid = pay_data[1] + amount
+                                status = "مدفوع" if new_paid >= pay_data[0] else "جزئي"
+                                cur.execute('''
+                                    UPDATE payments SET paid_amount = ?, paid_date = ?, status = ?, attachment = ?
+                                    WHERE id = ?
+                                ''', (new_paid, payment_date.isoformat(), status, file_bytes, payment_id))
+                                receipt_number = generate_receipt_number()
+                                cur.execute('''
+                                    INSERT INTO receipts (receipt_number, tenant_id, contract_id, payment_id, amount, receipt_date, payment_method, attachment)
+                                    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                                ''', (receipt_number, tenant_id, pay_data[2], payment_id, amount, payment_date.isoformat(), method, file_bytes))
+                                conn.commit()
+                                conn.close()
+                                st.cache_data.clear()
+                                st.success(f"تم تسجيل سداد بمبلغ {format_currency(amount)}")
+                                st.rerun()
+        else:
+            st.warning("لا تملك صلاحية تسجيل السداد")
 
-# ================== سندات القبض ==================
-elif menu == "سندات القبض":
-    st.subheader("🧾 سندات القبض")
-    df_receipts = load_receipts()
-    if not df_receipts.empty:
-        display_dataframe_with_reorder(df_receipts.drop(columns=["المرفق"]), "receipts")
-        receipt_id = st.selectbox("اختر سند للطباعة", df_receipts["الرقم"], format_func=lambda x: f"{df_receipts[df_receipts['الرقم']==x]['رقم السند'].iloc[0]}")
-        if receipt_id:
-            pdf_data = print_receipt(receipt_id)
-            if pdf_data:
-                st.download_button("طباعة السند", data=pdf_data, file_name=f"receipt_{receipt_id}.pdf", mime="application/pdf")
-            conn = get_conn()
-            cur = conn.cursor()
-            cur.execute("SELECT attachment FROM receipts WHERE id = ?", (receipt_id,))
-            att = cur.fetchone()
-            conn.close()
-            if att and att[0]:
-                st.download_button("تحميل مرفق السند", data=att[0], file_name=f"receipt_{receipt_id}_attachment.pdf", mime="application/octet-stream")
-    else:
-        st.info("لا توجد سندات قبض")
+    with tab2:
+        if has_permission(current_user_id, "سندات القبض_عرض"):
+            df_receipts = load_receipts()
+            if not df_receipts.empty:
+                display_dataframe_with_reorder(df_receipts.drop(columns=["المرفق"]), "receipts")
+                receipt_id = st.selectbox("اختر سند", df_receipts["الرقم"], format_func=lambda x: f"{df_receipts[df_receipts['الرقم']==x]['رقم السند'].iloc[0]}")
+                if receipt_id:
+                    col1, col2, col3 = st.columns(3)
+                    with col1:
+                        pdf_data = print_receipt(receipt_id)
+                        if pdf_data:
+                            st.download_button("طباعة السند", data=pdf_data, file_name=f"receipt_{receipt_id}.pdf", mime="application/pdf")
+                    with col2:
+                        conn = get_conn()
+                        cur = conn.cursor()
+                        cur.execute("SELECT attachment FROM receipts WHERE id = ?", (receipt_id,))
+                        att = cur.fetchone()
+                        conn.close()
+                        if att and att[0]:
+                            st.download_button("تحميل مرفق السند", data=att[0], file_name=f"receipt_{receipt_id}_attachment.pdf", mime="application/octet-stream")
+                    with col3:
+                        if has_permission(current_user_id, "سندات القبض_تعديل"):
+                            if st.button("تعديل المبلغ", key="edit_receipt_btn"):
+                                st.session_state['edit_receipt_id'] = receipt_id
+                                st.rerun()
+                    # نموذج تعديل المبلغ
+                    if 'edit_receipt_id' in st.session_state and st.session_state['edit_receipt_id'] == receipt_id:
+                        conn = get_conn()
+                        cur = conn.cursor()
+                        cur.execute("SELECT amount FROM receipts WHERE id = ?", (receipt_id,))
+                        current_amount = cur.fetchone()[0]
+                        conn.close()
+                        with st.form("edit_receipt_form"):
+                            new_amount = st.number_input("المبلغ الجديد", min_value=0.0, step=100.0, value=float(current_amount))
+                            if st.form_submit_button("حفظ التعديل"):
+                                success, message = update_receipt_amount(receipt_id, new_amount)
+                                if success:
+                                    st.success(message)
+                                    st.session_state['edit_receipt_id'] = None
+                                    st.rerun()
+                                else:
+                                    st.error(message)
+            else:
+                st.info("لا توجد سندات قبض")
+        else:
+            st.info("لا تملك صلاحية عرض سندات القبض")
 
 # ================== التقارير ==================
 elif menu == "التقارير":
@@ -2028,7 +2180,7 @@ elif menu == "التقارير":
 # ================== المستخدمون ==================
 elif menu == "المستخدمون":
     st.subheader("👤 إدارة المستخدمين والصلاحيات")
-    if current_role != "مدير":
+    if not has_permission(current_user_id, "المستخدمون"):
         st.error("لا تملك صلاحية الوصول لهذه الصفحة")
     else:
         tab1, tab2 = st.tabs(["عرض المستخدمين", "إضافة مستخدم"])
@@ -2036,28 +2188,36 @@ elif menu == "المستخدمون":
             df_users = load_users()
             if not df_users.empty:
                 st.dataframe(df_users, use_container_width=True)
-                user_id = st.selectbox("اختر مستخدم لتعديل دوره", df_users["الرقم"], format_func=lambda x: df_users[df_users["الرقم"]==x]["اسم المستخدم"].iloc[0])
+                user_id = st.selectbox("اختر مستخدم لتعديل صلاحياته", df_users["الرقم"], format_func=lambda x: df_users[df_users["الرقم"]==x]["اسم المستخدم"].iloc[0])
                 if user_id:
-                    current_role_user = df_users[df_users["الرقم"]==user_id]["الدور"].iloc[0]
-                    new_role = st.selectbox("الدور الجديد", ["مدير", "محاسب", "مشاهد"], index=["مدير", "محاسب", "مشاهد"].index(current_role_user))
-                    if st.button("تحديث الدور"):
-                        update_user_role(user_id, new_role)
-                        st.success("تم تحديث الدور بنجاح")
+                    # تحميل صلاحيات المستخدم المحدد
+                    user_perms = load_permissions(user_id)
+                    st.markdown("### الصلاحيات")
+                    # عرض مربعات اختيار لكل صفحة
+                    new_perms = {}
+                    col1, col2 = st.columns(2)
+                    with col1:
+                        for page in PAGE_KEYS[:6]:
+                            new_perms[page] = st.checkbox(page, value=user_perms.get(page, False), key=f"perm_{user_id}_{page}")
+                    with col2:
+                        for page in PAGE_KEYS[6:]:
+                            new_perms[page] = st.checkbox(page, value=user_perms.get(page, False), key=f"perm_{user_id}_{page}")
+                    if st.button("حفظ الصلاحيات"):
+                        save_permissions(user_id, new_perms)
+                        st.success("تم حفظ الصلاحيات")
                         st.rerun()
-                    if current_role_user == "مدير" and len(df_users[df_users["الدور"]=="مدير"]) <= 1:
-                        st.warning("لا يمكن حذف آخر مدير")
-                    else:
-                        if st.button("حذف المستخدم"):
-                            delete_user(user_id)
-                            st.success("تم حذف المستخدم")
-                            st.rerun()
+                    # زر حذف المستخدم
+                    if st.button("حذف المستخدم"):
+                        delete_user(user_id)
+                        st.success("تم حذف المستخدم")
+                        st.rerun()
             else:
                 st.info("لا يوجد مستخدمين")
         with tab2:
             with st.form("add_user_form"):
                 username = st.text_input("اسم المستخدم *")
                 password = st.text_input("كلمة المرور *", type="password")
-                role = st.selectbox("الدور", ["مدير", "محاسب", "مشاهد"])
+                role = st.selectbox("الدور الافتراضي", ["مدير", "محاسب", "مشاهد"])
                 submit = st.form_submit_button("إضافة مستخدم")
                 if submit:
                     if username.strip() and password.strip():
@@ -2073,7 +2233,7 @@ elif menu == "المستخدمون":
 # ================== الإعدادات ==================
 elif menu == "الإعدادات":
     st.subheader("⚙️ الإعدادات")
-    if current_role != "مدير":
+    if not has_permission(current_user_id, "الإعدادات"):
         st.error("لا تملك صلاحية الوصول لهذه الصفحة")
     else:
         with st.form("settings_form"):
@@ -2112,27 +2272,30 @@ elif menu == "الإعدادات":
 # ================== النسخ الاحتياطي ==================
 elif menu == "نسخ احتياطي":
     st.subheader("💾 النسخ الاحتياطي اليدوي")
-    col1, col2 = st.columns(2)
-    with col1:
-        st.markdown("### تنزيل نسخة احتياطية")
-        try:
-            with open("rentals.db", "rb") as f:
-                db_bytes = f.read()
-            st.download_button(
-                label="تحميل قاعدة البيانات",
-                data=db_bytes,
-                file_name=f"rentals_backup_{date.today().isoformat()}.db",
-                mime="application/octet-stream"
-            )
-        except FileNotFoundError:
-            st.warning("لا توجد قاعدة بيانات بعد.")
-    with col2:
-        st.markdown("### استعادة نسخة احتياطية")
-        uploaded_file = st.file_uploader("اختر ملف قاعدة البيانات", type=["db", "sqlite"])
-        if uploaded_file is not None:
-            if st.button("استعادة النسخة المرفوعة"):
-                with open("rentals.db", "wb") as f:
-                    f.write(uploaded_file.read())
-                st.cache_data.clear()
-                st.success("تم استعادة النسخة الاحتياطية بنجاح")
-                st.rerun()
+    if not has_permission(current_user_id, "نسخ احتياطي"):
+        st.error("لا تملك صلاحية الوصول لهذه الصفحة")
+    else:
+        col1, col2 = st.columns(2)
+        with col1:
+            st.markdown("### تنزيل نسخة احتياطية")
+            try:
+                with open("rentals.db", "rb") as f:
+                    db_bytes = f.read()
+                st.download_button(
+                    label="تحميل قاعدة البيانات",
+                    data=db_bytes,
+                    file_name=f"rentals_backup_{date.today().isoformat()}.db",
+                    mime="application/octet-stream"
+                )
+            except FileNotFoundError:
+                st.warning("لا توجد قاعدة بيانات بعد.")
+        with col2:
+            st.markdown("### استعادة نسخة احتياطية")
+            uploaded_file = st.file_uploader("اختر ملف قاعدة البيانات", type=["db", "sqlite"])
+            if uploaded_file is not None:
+                if st.button("استعادة النسخة المرفوعة"):
+                    with open("rentals.db", "wb") as f:
+                        f.write(uploaded_file.read())
+                    st.cache_data.clear()
+                    st.success("تم استعادة النسخة الاحتياطية بنجاح")
+                    st.rerun()
