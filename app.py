@@ -546,6 +546,13 @@ def init_db():
     if cur.fetchone()[0] == 0:
         cur.execute("INSERT INTO users (username, password_hash, role, permissions) VALUES (?, ?, ?, ?)",
                     ('admin', hashlib.sha256('admin123'.encode()).hexdigest(), 'مدير', json.dumps({})))
+    else:
+        # ضمان أن كلمة مرور admin هي admin123 إذا كانت مختلفة
+        cur.execute("SELECT password_hash FROM users WHERE username = 'admin'")
+        admin_hash = cur.fetchone()
+        if admin_hash and admin_hash[0] != hashlib.sha256('admin123'.encode()).hexdigest():
+            cur.execute("UPDATE users SET password_hash = ? WHERE username = 'admin'",
+                        (hashlib.sha256('admin123'.encode()).hexdigest(),))
     conn.commit()
     conn.close()
 
@@ -630,7 +637,6 @@ def has_permission(user_id, page):
 def check_login(username, password):
     conn = get_conn()
     cur = conn.cursor()
-    # استخدام COLLATE NOCASE لعدم الحساسية لحالة الأحرف
     password_hash = hashlib.sha256(password.strip().encode()).hexdigest()
     cur.execute("SELECT id, username, role FROM users WHERE username = ? COLLATE NOCASE AND password_hash = ?", (username.strip(), password_hash))
     user = cur.fetchone()
@@ -2067,6 +2073,22 @@ elif menu == "المستخدمون":
                         delete_user(user_id)
                         st.success("تم حذف المستخدم")
                         st.rerun()
+                    # إضافة تغيير كلمة المرور
+                    if current_role == 'مدير':
+                        with st.expander("تغيير كلمة المرور"):
+                            new_password = st.text_input("كلمة المرور الجديدة", type="password", key=f"new_pass_{user_id}")
+                            if st.button("تعيين كلمة المرور", key=f"set_pass_{user_id}"):
+                                if new_password.strip():
+                                    conn = get_conn()
+                                    cur = conn.cursor()
+                                    new_hash = hashlib.sha256(new_password.strip().encode()).hexdigest()
+                                    cur.execute("UPDATE users SET password_hash = ? WHERE id = ?", (new_hash, user_id))
+                                    conn.commit()
+                                    conn.close()
+                                    st.success("تم تحديث كلمة المرور")
+                                    st.rerun()
+                                else:
+                                    st.error("كلمة المرور لا يمكن أن تكون فارغة")
             else:
                 st.info("لا يوجد مستخدمين")
         with tab2:
