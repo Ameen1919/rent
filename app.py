@@ -558,7 +558,7 @@ PAGE_KEYS = [
     "العقارات",
     "العقود",
     "الدفعات",
-    "سندات القبض",   # تم دمج صفحة السداد وسندات القبض
+    "سندات القبض",
     "التقارير",
     "المستخدمون",
     "الإعدادات",
@@ -630,8 +630,9 @@ def has_permission(user_id, page):
 def check_login(username, password):
     conn = get_conn()
     cur = conn.cursor()
-    password_hash = hashlib.sha256(password.encode()).hexdigest()
-    cur.execute("SELECT id, username, role FROM users WHERE username = ? AND password_hash = ?", (username, password_hash))
+    # استخدام COLLATE NOCASE لعدم الحساسية لحالة الأحرف
+    password_hash = hashlib.sha256(password.strip().encode()).hexdigest()
+    cur.execute("SELECT id, username, role FROM users WHERE username = ? COLLATE NOCASE AND password_hash = ?", (username.strip(), password_hash))
     user = cur.fetchone()
     conn.close()
     if user:
@@ -742,8 +743,8 @@ if not st.session_state.logged_in:
         <h2>تسجيل الدخول</h2>
     """, unsafe_allow_html=True)
     with st.form("login_form"):
-        username = st.text_input("اسم المستخدم")
-        password = st.text_input("كلمة المرور", type="password")
+        username = st.text_input("اسم المستخدم").strip()
+        password = st.text_input("كلمة المرور", type="password").strip()
         submitted = st.form_submit_button("دخول")
         if submitted:
             user = check_login(username, password)
@@ -1073,16 +1074,16 @@ def import_tenants_from_excel(uploaded_file):
 def add_user(username, password, role):
     conn = get_conn()
     cur = conn.cursor()
-    cur.execute("SELECT COUNT(*) FROM users WHERE username = ?", (username,))
+    cur.execute("SELECT COUNT(*) FROM users WHERE username = ? COLLATE NOCASE", (username.strip(),))
     if cur.fetchone()[0] > 0:
         conn.close()
         return False, "اسم المستخدم موجود مسبقاً"
-    password_hash = hashlib.sha256(password.encode()).hexdigest()
+    password_hash = hashlib.sha256(password.strip().encode()).hexdigest()
     default_perms = get_default_permissions(role)
     cur.execute('''
         INSERT INTO users (username, password_hash, role, permissions)
         VALUES (?, ?, ?, ?)
-    ''', (username, password_hash, role, json.dumps(default_perms)))
+    ''', (username.strip(), password_hash, role, json.dumps(default_perms)))
     conn.commit()
     conn.close()
     return True, "تم إضافة المستخدم بنجاح"
@@ -1450,8 +1451,57 @@ elif menu == "العقود":
                                 st.success("تم الحذف")
                                 st.rerun()
                         if 'edit_contract_id' in st.session_state and st.session_state['edit_contract_id'] == contract_id:
-                            # نموذج مبسط للتعديل
-                            st.info("تعديل العقد - يمكن تنفيذه لاحقاً")
+                            conn = get_conn()
+                            cur = conn.cursor()
+                            cur.execute('''
+                                SELECT tenant_id, property_id, contract_number, start_date, end_date,
+                                       rent_amount, interval_months, deposit_amount, tax_included, tax_rate, notes
+                                FROM contracts WHERE id = ?
+                            ''', (contract_id,))
+                            cdata = cur.fetchone()
+                            conn.close()
+                            df_tenants = load_tenants()
+                            df_props = load_properties()
+                            with st.form("edit_contract_form"):
+                                tenant_id = st.selectbox("المستأجر", df_tenants["الرقم"],
+                                                         index=df_tenants.index[df_tenants["الرقم"] == cdata[0]][0],
+                                                         format_func=lambda x: df_tenants[df_tenants["الرقم"]==x]["الاسم"].iloc[0])
+                                property_id = st.selectbox("العقار", df_props["الرقم"],
+                                                           index=df_props.index[df_props["الرقم"] == cdata[1]][0],
+                                                           format_func=lambda x: df_props[df_props["الرقم"]==x]["الاسم"].iloc[0])
+                                contract_number = st.text_input("رقم العقد", value=cdata[2])
+                                start_date = st.date_input("تاريخ البداية", value=date.fromisoformat(cdata[3]))
+                                end_date = st.date_input("تاريخ النهاية", value=date.fromisoformat(cdata[4]))
+                                rent_amount = st.number_input("قيمة الإيجار السنوي", min_value=0.0, step=100.0, value=float(cdata[5]))
+                                interval_months = st.number_input("دورية السداد (شهور)", min_value=1, value=int(cdata[6]))
+                                deposit_amount = st.number_input("التأمين", min_value=0.0, step=100.0, value=float(cdata[7]))
+                                tax_included = st.checkbox("المبلغ شامل الضريبة", value=bool(cdata[8]))
+                                tax_rate = st.number_input("نسبة الضريبة (%)", min_value=0.0, value=float(cdata[9])*100, step=1.0) / 100
+                                notes = st.text_area("ملاحظات", value=cdata[10])
+                                if st.form_submit_button("حفظ التعديلات"):
+                                    if start_date >= end_date:
+                                        st.error("تاريخ النهاية يجب أن يكون بعد البداية")
+                                    else:
+                                        conn = get_conn()
+                                        cur = conn.cursor()
+                                        cur.execute('''
+                                            UPDATE contracts SET tenant_id=?, property_id=?, contract_number=?, start_date=?, end_date=?,
+                                                   rent_amount=?, interval_months=?, deposit_amount=?, tax_included=?, tax_rate=?, notes=?
+                                            WHERE id=?
+                                        ''', (tenant_id, property_id, contract_number, start_date.isoformat(), end_date.isoformat(),
+                                              rent_amount, interval_months, deposit_amount, 1 if tax_included else 0, tax_rate, notes, contract_id))
+                                        conn.commit()
+                                        conn.close()
+                                        conn = get_conn()
+                                        cur = conn.cursor()
+                                        cur.execute("DELETE FROM payments WHERE contract_id = ?", (contract_id,))
+                                        conn.commit()
+                                        conn.close()
+                                        create_payment_schedule(contract_id, tenant_id, start_date, end_date, rent_amount, interval_months)
+                                        st.cache_data.clear()
+                                        st.success("تم تحديث العقد وإعادة جدولة الدفعات")
+                                        st.session_state['edit_contract_id'] = None
+                                        st.rerun()
                 else:
                     st.info("لا توجد نتائج")
             else:
