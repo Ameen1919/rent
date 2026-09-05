@@ -547,7 +547,6 @@ def init_db():
         cur.execute("INSERT INTO users (username, password_hash, role, permissions) VALUES (?, ?, ?, ?)",
                     ('admin', hashlib.sha256('admin123'.encode()).hexdigest(), 'مدير', json.dumps({})))
     else:
-        # ضمان أن كلمة مرور admin هي admin123 إذا كانت مختلفة
         cur.execute("SELECT password_hash FROM users WHERE username = 'admin'")
         admin_hash = cur.fetchone()
         if admin_hash and admin_hash[0] != hashlib.sha256('admin123'.encode()).hexdigest():
@@ -667,7 +666,10 @@ def load_settings():
         'secondary_color': '#F5A623',
         'background_color': '#F8F9FA',
         'logo': None,
-        'company_name': 'نظام إدارة الإيجارات'
+        'company_name': 'نظام إدارة الإيجارات',
+        'telegram_bot_token': '',
+        'telegram_chat_id': '',
+        'telegram_file_id': ''
     }
     for key, value in defaults.items():
         if key not in settings:
@@ -704,6 +706,9 @@ primary_color = settings['primary_color']
 secondary_color = settings['secondary_color']
 background_color = settings['background_color']
 logo_data = load_logo_data()
+telegram_bot_token = settings.get('telegram_bot_token', '')
+telegram_chat_id = settings.get('telegram_chat_id', '')
+telegram_file_id = settings.get('telegram_file_id', '')
 
 # ---------- تسجيل الدخول ----------
 if 'logged_in' not in st.session_state:
@@ -2133,6 +2138,22 @@ elif menu == "الإعدادات":
                     save_setting('logo', logo_bytes)
                 st.success("تم حفظ الإعدادات بنجاح")
                 st.rerun()
+
+        # إعدادات تيليجرام
+        st.markdown("---")
+        st.subheader("📱 إعداد تيليجرام للنسخ الاحتياطي")
+        with st.form("telegram_settings_form"):
+            token_input = st.text_input("Bot Token", value=telegram_bot_token, type="password")
+            chat_input = st.text_input("Chat ID", value=telegram_chat_id)
+            file_id_input = st.text_input("File ID (اختياري، يُحفظ للاستعادة الدائمة)", value=telegram_file_id)
+            submit_telegram = st.form_submit_button("حفظ بيانات تيليجرام")
+            if submit_telegram:
+                save_setting('telegram_bot_token', token_input)
+                save_setting('telegram_chat_id', chat_input)
+                save_setting('telegram_file_id', file_id_input)
+                st.success("تم حفظ بيانات تيليجرام")
+                st.rerun()
+
         st.markdown("---")
         st.subheader("معاينة الألوان")
         st.markdown(f"""
@@ -2177,3 +2198,53 @@ elif menu == "نسخ احتياطي":
                     st.cache_data.clear()
                     st.success("تم استعادة النسخة الاحتياطية بنجاح")
                     st.rerun()
+
+        st.markdown("---")
+        st.subheader("📱 النسخ الاحتياطي عبر تيليجرام")
+
+        if not telegram_bot_token or not telegram_chat_id:
+            st.warning("يرجى إدخال بيانات تيليجرام في صفحة الإعدادات أولاً")
+        else:
+            if st.button("⬆️ رفع قاعدة البيانات إلى تيليجرام"):
+                # إرسال ملف قاعدة البيانات مباشرة
+                url = f"https://api.telegram.org/bot{telegram_bot_token}/sendDocument"
+                try:
+                    with open("rentals.db", "rb") as f:
+                        resp = requests.post(url, files={'document': f}, data={'chat_id': telegram_chat_id, 'caption': f"نسخة احتياطية {datetime.now().strftime('%Y-%m-%d %H:%M')}"})
+                    if resp.status_code == 200:
+                        file_id = resp.json().get('result', {}).get('document', {}).get('file_id')
+                        if file_id:
+                            save_setting('telegram_file_id', file_id)
+                            st.success("تم رفع قاعدة البيانات إلى تيليجرام بنجاح")
+                            st.info(f"📎 معرّف الملف (File ID) الحالي: `{file_id}`")
+                            st.write("تم حفظ المعرّف تلقائيًا في الإعدادات")
+                        else:
+                            st.error("فشل استخراج معرّف الملف من الاستجابة")
+                    else:
+                        st.error(f"فشل الرفع: {resp.text}")
+                except Exception as e:
+                    st.error(f"حدث خطأ: {str(e)}")
+
+            if st.button("⬇️ استعادة قاعدة البيانات من تيليجرام"):
+                if not telegram_file_id:
+                    st.error("لا يوجد معرّف ملف محفوظ. يرجى رفع نسخة أولاً أو إدخال المعرّف يدويًا في الإعدادات.")
+                else:
+                    try:
+                        info_url = f"https://api.telegram.org/bot{telegram_bot_token}/getFile?file_id={telegram_file_id}"
+                        resp = requests.get(info_url).json()
+                        if not resp.get('ok'):
+                            st.error("فشل جلب معلومات الملف من تيليجرام")
+                        else:
+                            file_path = resp['result']['file_path']
+                            download_url = f"https://api.telegram.org/file/bot{telegram_bot_token}/{file_path}"
+                            db_resp = requests.get(download_url)
+                            if db_resp.status_code == 200:
+                                with open("rentals.db", "wb") as f:
+                                    f.write(db_resp.content)
+                                st.cache_data.clear()
+                                st.success("تم استعادة قاعدة البيانات من تيليجرام بنجاح")
+                                st.rerun()
+                            else:
+                                st.error("فشل تنزيل الملف")
+                    except Exception as e:
+                        st.error(f"حدث خطأ: {str(e)}")
