@@ -1229,12 +1229,14 @@ elif menu == "المستأجرين":
         with tab1:
             df_tenants = load_tenants()
             if not df_tenants.empty:
-                search_term = st.text_input("بحث في المستأجرين", key="search_tenants")
-                if search_term:
-                    mask = df_tenants.apply(lambda row: search_term.lower() in str(row.values).lower(), axis=1)
-                    filtered_tenants = df_tenants[mask]
+                # ✅ إضافة فلتر المنطقة
+                regions = df_tenants["المنطقة"].dropna().unique().tolist()
+                region_filter = st.selectbox("اختر المنطقة", ["الكل"] + regions)
+                if region_filter != "الكل":
+                    filtered_tenants = df_tenants[df_tenants["المنطقة"] == region_filter]
                 else:
                     filtered_tenants = df_tenants
+
                 if not filtered_tenants.empty:
                     display_dataframe_with_reorder(filtered_tenants, "tenants_filtered")
                     col_exp1, col_exp2 = st.columns(2)
@@ -1245,6 +1247,7 @@ elif menu == "المستأجرين":
                         st.download_button("تحميل Excel", data=output.getvalue(), file_name="المستأجرين.xlsx")
                     with col_exp2:
                         export_df_to_pdf(filtered_tenants, "بيان المستأجرين", "المستأجرين.pdf")
+
                     tenant_id = st.selectbox("اختر مستأجر", filtered_tenants["الرقم"], format_func=lambda x: filtered_tenants[filtered_tenants["الرقم"]==x]["الاسم"].iloc[0])
                     if tenant_id:
                         conn = get_conn()
@@ -1252,6 +1255,7 @@ elif menu == "المستأجرين":
                         cur.execute("SELECT * FROM tenants WHERE id = ?", (tenant_id,))
                         tenant = cur.fetchone()
                         st.write(f"**الاسم:** {tenant[1]} | **الهاتف:** {tenant[2]} | **المنطقة:** {tenant[5]}")
+
                         if current_role == 'مدير' or (current_role == 'محاسب' and has_permission(current_user_id, "المستأجرين")):
                             col_edit, col_del = st.columns(2)
                             with col_edit:
@@ -1295,7 +1299,7 @@ elif menu == "المستأجرين":
                                         st.session_state['edit_tenant_id'] = None
                                         st.rerun()
                 else:
-                    st.info("لا توجد نتائج")
+                    st.info("لا توجد نتائج مطابقة للمنطقة المحددة")
             else:
                 st.info("لا يوجد مستأجرين")
         with tab2:
@@ -1441,16 +1445,28 @@ elif menu == "العقود":
         with tab1:
             df_contracts = load_contracts()
             if not df_contracts.empty:
-                search_contract = st.text_input("بحث", key="search_contracts")
-                if search_contract:
-                    mask = df_contracts.apply(lambda row: search_contract.lower() in str(row.values).lower(), axis=1)
-                    filtered_contracts = df_contracts[mask]
-                else:
-                    filtered_contracts = df_contracts
-                if not filtered_contracts.empty:
-                    display_dataframe_with_reorder(filtered_contracts, "contracts_filtered")
+                # ✅ إضافة فلاتر المنطقة والمستأجر
+                df_tenants = load_tenants()
+
+                # فلتر المنطقة
+                regions = df_tenants["المنطقة"].dropna().unique().tolist()
+                region_filter = st.selectbox("اختر المنطقة", ["الكل"] + regions)
+                if region_filter != "الكل":
+                    tenant_ids_in_region = df_tenants[df_tenants["المنطقة"] == region_filter]["الرقم"].tolist()
+                    df_contracts = df_contracts[df_contracts["اسم المستأجر"].isin(
+                        df_tenants[df_tenants["الرقم"].isin(tenant_ids_in_region)]["الاسم"]
+                    )]
+
+                # فلتر المستأجر
+                tenants_in_contracts = df_contracts["اسم المستأجر"].unique().tolist()
+                tenant_filter = st.selectbox("اختر المستأجر", ["الكل"] + tenants_in_contracts)
+                if tenant_filter != "الكل":
+                    df_contracts = df_contracts[df_contracts["اسم المستأجر"] == tenant_filter]
+
+                if not df_contracts.empty:
+                    display_dataframe_with_reorder(df_contracts, "contracts_filtered")
                     if current_role == 'مدير':
-                        contract_id = st.selectbox("اختر عقد", filtered_contracts["الرقم"], format_func=lambda x: f"عقد رقم {x}")
+                        contract_id = st.selectbox("اختر عقد", df_contracts["الرقم"], format_func=lambda x: f"عقد رقم {x}")
                         col_edit, col_del = st.columns(2)
                         with col_edit:
                             if st.button("تعديل"):
@@ -1471,15 +1487,15 @@ elif menu == "العقود":
                             ''', (contract_id,))
                             cdata = cur.fetchone()
                             conn.close()
-                            df_tenants = load_tenants()
-                            df_props = load_properties()
+                            df_tenants_all = load_tenants()
+                            df_props_all = load_properties()
                             with st.form("edit_contract_form"):
-                                tenant_id = st.selectbox("المستأجر", df_tenants["الرقم"],
-                                                         index=df_tenants.index[df_tenants["الرقم"] == cdata[0]][0],
-                                                         format_func=lambda x: df_tenants[df_tenants["الرقم"]==x]["الاسم"].iloc[0])
-                                property_id = st.selectbox("العقار", df_props["الرقم"],
-                                                           index=df_props.index[df_props["الرقم"] == cdata[1]][0],
-                                                           format_func=lambda x: df_props[df_props["الرقم"]==x]["الاسم"].iloc[0])
+                                tenant_id = st.selectbox("المستأجر", df_tenants_all["الرقم"],
+                                                         index=df_tenants_all.index[df_tenants_all["الرقم"] == cdata[0]][0],
+                                                         format_func=lambda x: df_tenants_all[df_tenants_all["الرقم"]==x]["الاسم"].iloc[0])
+                                property_id = st.selectbox("العقار", df_props_all["الرقم"],
+                                                           index=df_props_all.index[df_props_all["الرقم"] == cdata[1]][0],
+                                                           format_func=lambda x: df_props_all[df_props_all["الرقم"]==x]["الاسم"].iloc[0])
                                 contract_number = st.text_input("رقم العقد", value=cdata[2])
                                 start_date = st.date_input("تاريخ البداية", value=date.fromisoformat(cdata[3]))
                                 end_date = st.date_input("تاريخ النهاية", value=date.fromisoformat(cdata[4]))
@@ -1514,7 +1530,7 @@ elif menu == "العقود":
                                         st.session_state['edit_contract_id'] = None
                                         st.rerun()
                 else:
-                    st.info("لا توجد نتائج")
+                    st.info("لا توجد عقود مطابقة للفلاتر")
             else:
                 st.info("لا توجد عقود")
         with tab2:
