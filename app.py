@@ -880,10 +880,6 @@ def generate_receipt_number():
     return f"RCP-{int(time.time())}"
 
 def create_payment_schedule(contract_id, tenant_id, start_date, end_date, rent_amount, interval_months):
-    """
-    إنشاء جدول دفعات من start_date إلى end_date بفاصل interval_months.
-    rent_amount هو الإيجار السنوي، والدفعة = rent_amount * interval_months / 12
-    """
     step = relativedelta(months=interval_months)
     current = start_date
     conn = get_conn()
@@ -899,7 +895,7 @@ def create_payment_schedule(contract_id, tenant_id, start_date, end_date, rent_a
         count += 1
     conn.commit()
     conn.close()
-    return count  # عدد الدفعات
+    return count
 
 def get_unread_alerts(tenant_id=None):
     conn = get_conn()
@@ -1092,7 +1088,6 @@ def import_tenants_from_excel(uploaded_file):
     except Exception as e:
         st.error(f"حدث خطأ أثناء الاستيراد: {str(e)}")
 
-# ✅ دالة استيراد العقود من Excel
 def import_contracts_from_excel(uploaded_file):
     try:
         df = pd.read_excel(uploaded_file)
@@ -1146,7 +1141,6 @@ def import_contracts_from_excel(uploaded_file):
                       rent_amount, interval_months, deposit_amount, notes,
                       tax_included, tax_rate))
                 contract_id = cur.lastrowid
-                # توليد الدفعات
                 count = create_payment_schedule(contract_id, tenant_id, start_date, end_date, rent_amount, interval_months)
                 imported += 1
             except Exception as e:
@@ -1410,6 +1404,16 @@ elif menu == "المستأجرين":
                 st.warning("لا تملك صلاحية الإضافة")
         with tab3:
             if has_permission(current_user_id, "المستأجرين") and (current_role == 'مدير' or current_role == 'محاسب'):
+                st.markdown("### تنزيل قالب Excel للمستأجرين")
+                # قالب بسيط بأعمدة محددة
+                template_df = pd.DataFrame(columns=["الاسم", "الهاتف", "رقم الهوية / الإقامة", "العنوان", "المنطقة", "ملاحظات"])
+                output = io.BytesIO()
+                with pd.ExcelWriter(output, engine='xlsxwriter') as writer:
+                    template_df.to_excel(writer, index=False, sheet_name="المستأجرين")
+                st.download_button("📥 تحميل قالب المستأجرين", data=output.getvalue(), file_name="قالب_المستأجرين.xlsx")
+
+                st.markdown("---")
+                st.markdown("### استيراد من Excel")
                 uploaded_file = st.file_uploader("اختر ملف Excel", type=["xlsx", "xls"])
                 if uploaded_file is not None:
                     if st.button("استيراد"):
@@ -1661,6 +1665,19 @@ elif menu == "العقود":
                 st.warning("لا تملك صلاحية الإضافة")
         with tab3:
             if current_role == 'مدير':
+                st.markdown("### تنزيل قالب Excel للعقود")
+                # قالب بسيط بأعمدة محددة
+                contract_template = pd.DataFrame(columns=[
+                    "اسم المستأجر", "اسم العقار", "رقم العقد", "تاريخ البداية", "تاريخ النهاية",
+                    "قيمة الإيجار السنوي", "دورية السداد (شهور)", "التأمين", "شامل الضريبة", "نسبة الضريبة", "ملاحظات"
+                ])
+                output = io.BytesIO()
+                with pd.ExcelWriter(output, engine='xlsxwriter') as writer:
+                    contract_template.to_excel(writer, index=False, sheet_name="العقود")
+                st.download_button("📥 تحميل قالب العقود", data=output.getvalue(), file_name="قالب_العقود.xlsx")
+
+                st.markdown("---")
+                st.markdown("### استيراد من Excel")
                 uploaded_file = st.file_uploader("اختر ملف Excel", type=["xlsx", "xls"], key="contract_excel_upload")
                 if uploaded_file is not None:
                     if st.button("استيراد العقود", key="import_contracts_btn"):
