@@ -58,6 +58,20 @@ def parse_currency(value):
         return float(value.replace(',', '').strip())
     return 0.0
 
+def parse_date_safe(value, default=None):
+    """تحويل نص إلى تاريخ بأمان مع معالجة الأخطاء"""
+    if not value:
+        return default or date.today()
+    if isinstance(value, date):
+        return value
+    try:
+        return datetime.strptime(str(value), '%Y-%m-%d').date()
+    except:
+        try:
+            return datetime.fromisoformat(str(value)).date()
+        except:
+            return default or date.today()
+
 def format_currency(value):
     return f"{value:,.2f}"
 
@@ -1068,9 +1082,15 @@ def import_tenants_from_excel(uploaded_file):
             return
         conn = get_conn()
         cur = conn.cursor()
+        existing_names = {row[0] for row in cur.execute("SELECT name FROM tenants").fetchall()}
+        added = 0
+        skipped = 0
         for _, row in df.iterrows():
             name = str(row.get("الاسم", "")).strip()
             if not name:
+                continue
+            if name in existing_names:
+                skipped += 1
                 continue
             phone = str(row.get("الهاتف", "")).strip() if "الهاتف" in df.columns else ""
             national_id = str(row.get("رقم الهوية / الإقامة", "")).strip() if "رقم الهوية / الإقامة" in df.columns else ""
@@ -1081,10 +1101,14 @@ def import_tenants_from_excel(uploaded_file):
                 INSERT INTO tenants (name, phone, national_id, address, region, notes)
                 VALUES (?, ?, ?, ?, ?, ?)
             ''', (name, phone, national_id, address, region, notes))
+            added += 1
         conn.commit()
         conn.close()
         st.cache_data.clear()
-        st.success(f"تم استيراد {len(df)} مستأجر بنجاح")
+        msg = f"تم استيراد {added} مستأجر جديد"
+        if skipped > 0:
+            msg += f"، وتم تجاهل {skipped} اسم مكرر"
+        st.success(msg)
     except Exception as e:
         st.error(f"حدث خطأ أثناء الاستيراد: {str(e)}")
 
@@ -1103,6 +1127,7 @@ def import_contracts_from_excel(uploaded_file):
         properties_dict = {row[1]: row[0] for row in cur.execute("SELECT id, name FROM properties").fetchall()}
 
         imported = 0
+        skipped = 0
         errors = []
         for idx, row in df.iterrows():
             try:
@@ -1132,6 +1157,19 @@ def import_contracts_from_excel(uploaded_file):
                     errors.append(f"صف {idx+2}: تاريخ البداية بعد تاريخ النهاية")
                     continue
 
+                # فحص التكرار: نفس رقم العقد أو نفس المستأجر/العقار/التواريخ
+                existing = None
+                if contract_number:
+                    existing = cur.execute("SELECT id FROM contracts WHERE contract_number = ?", (contract_number,)).fetchone()
+                if not existing:
+                    existing = cur.execute("""
+                        SELECT id FROM contracts 
+                        WHERE tenant_id=? AND property_id=? AND start_date=? AND end_date=?
+                    """, (tenant_id, property_id, start_date.isoformat(), end_date.isoformat())).fetchone()
+                if existing:
+                    skipped += 1
+                    continue
+
                 cur.execute('''
                     INSERT INTO contracts (tenant_id, property_id, contract_number, start_date, end_date,
                                            rent_amount, interval_months, deposit_amount, notes,
@@ -1149,8 +1187,11 @@ def import_contracts_from_excel(uploaded_file):
         conn.commit()
         conn.close()
         st.cache_data.clear()
+        msg = f"تم استيراد {imported} عقد جديد"
+        if skipped > 0:
+            msg += f"، وتم تجاهل {skipped} عقد مكرر"
         if imported > 0:
-            st.success(f"تم استيراد {imported} عقد بنجاح")
+            st.success(msg)
         if errors:
             st.warning("بعض الأخطاء: " + "; ".join(errors[:10]))
     except Exception as e:
@@ -1405,7 +1446,6 @@ elif menu == "المستأجرين":
         with tab3:
             if has_permission(current_user_id, "المستأجرين") and (current_role == 'مدير' or current_role == 'محاسب'):
                 st.markdown("### تنزيل قالب Excel للمستأجرين")
-                # قالب بسيط بأعمدة محددة
                 template_df = pd.DataFrame(columns=["الاسم", "الهاتف", "رقم الهوية / الإقامة", "العنوان", "المنطقة", "ملاحظات"])
                 output = io.BytesIO()
                 with pd.ExcelWriter(output, engine='xlsxwriter') as writer:
@@ -1581,8 +1621,8 @@ elif menu == "العقود":
                                                            index=df_props_all.index[df_props_all["الرقم"] == cdata[1]][0],
                                                            format_func=lambda x: df_props_all[df_props_all["الرقم"]==x]["الاسم"].iloc[0])
                                 contract_number = st.text_input("رقم العقد", value=cdata[2])
-                                start_date = st.date_input("تاريخ البداية", value=date.fromisoformat(cdata[3]))
-                                end_date = st.date_input("تاريخ النهاية", value=date.fromisoformat(cdata[4]))
+                                start_date = st.date_input("تاريخ البداية", value=parse_date_safe(cdata[3]))
+                                end_date = st.date_input("تاريخ النهاية", value=parse_date_safe(cdata[4]))
                                 rent_amount = st.number_input("قيمة الإيجار السنوي", min_value=0.0, step=100.0, value=float(cdata[5]))
                                 interval_months = st.number_input("دورية السداد (شهور)", min_value=1, value=int(cdata[6]))
                                 deposit_amount = st.number_input("التأمين", min_value=0.0, step=100.0, value=float(cdata[7]))
@@ -1666,7 +1706,6 @@ elif menu == "العقود":
         with tab3:
             if current_role == 'مدير':
                 st.markdown("### تنزيل قالب Excel للعقود")
-                # قالب بسيط بأعمدة محددة
                 contract_template = pd.DataFrame(columns=[
                     "اسم المستأجر", "اسم العقار", "رقم العقد", "تاريخ البداية", "تاريخ النهاية",
                     "قيمة الإيجار السنوي", "دورية السداد (شهور)", "التأمين", "شامل الضريبة", "نسبة الضريبة", "ملاحظات"
@@ -1728,7 +1767,7 @@ elif menu == "الدفعات":
                         pay_data = cur.fetchone()
                         conn.close()
                         with st.form("edit_payment_form"):
-                            due_date = st.date_input("تاريخ الاستحقاق", value=date.fromisoformat(pay_data[0]))
+                            due_date = st.date_input("تاريخ الاستحقاق", value=parse_date_safe(pay_data[0]))
                             amount = st.number_input("المبلغ", min_value=0.0, step=100.0, value=float(pay_data[1]))
                             status = st.selectbox("الحالة", ["مستحق", "مدفوع", "جزئي", "متأخر"], index=["مستحق", "مدفوع", "جزئي", "متأخر"].index(pay_data[2]))
                             notes = st.text_area("ملاحظات", value=pay_data[3] or "")
