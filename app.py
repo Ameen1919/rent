@@ -2,7 +2,7 @@ import streamlit as st
 import pandas as pd
 import sqlite3
 import io
-from datetime import date, timedelta
+from datetime import date, timedelta, datetime
 from dateutil.relativedelta import relativedelta
 import time
 from hijri_converter import convert
@@ -880,19 +880,26 @@ def generate_receipt_number():
     return f"RCP-{int(time.time())}"
 
 def create_payment_schedule(contract_id, tenant_id, start_date, end_date, rent_amount, interval_months):
+    """
+    إنشاء جدول دفعات من start_date إلى end_date بفاصل interval_months.
+    rent_amount هو الإيجار السنوي، والدفعة = rent_amount * interval_months / 12
+    """
     step = relativedelta(months=interval_months)
     current = start_date
     conn = get_conn()
     cur = conn.cursor()
     payment_amount = rent_amount * interval_months / 12.0
+    count = 0
     while current <= end_date:
         cur.execute('''
             INSERT INTO payments (contract_id, tenant_id, due_date, amount)
             VALUES (?, ?, ?, ?)
         ''', (contract_id, tenant_id, current.isoformat(), payment_amount))
         current += step
+        count += 1
     conn.commit()
     conn.close()
+    return count  # عدد الدفعات
 
 def get_unread_alerts(tenant_id=None):
     conn = get_conn()
@@ -952,11 +959,14 @@ def load_tenants():
     df = pd.read_sql_query("""
         SELECT t.id as "الرقم", t.name as "الاسم", t.phone as "الهاتف", 
                t.national_id as "رقم الهوية / الإقامة", t.address as "العنوان", t.region as "المنطقة",
-               CASE WHEN EXISTS (
-                   SELECT 1 FROM contracts c 
-                   WHERE c.tenant_id = t.id AND c.status='نشط' AND c.end_date >= date('now')
-               ) THEN 'ساري' ELSE 'غير ساري' END as "حالة العقد"
+               COALESCE(c.contract_number, 'لا يوجد عقد') as "رقم العقد",
+               CASE 
+                   WHEN c.id IS NULL THEN 'بدون عقد'
+                   WHEN c.end_date < date('now') THEN 'منتهي'
+                   ELSE 'ساري'
+               END as "حالة العقد"
         FROM tenants t
+        LEFT JOIN contracts c ON c.tenant_id = t.id AND c.status = 'نشط'
         ORDER BY t.name
     """, conn)
     conn.close()
@@ -1079,6 +1089,76 @@ def import_tenants_from_excel(uploaded_file):
         conn.close()
         st.cache_data.clear()
         st.success(f"تم استيراد {len(df)} مستأجر بنجاح")
+    except Exception as e:
+        st.error(f"حدث خطأ أثناء الاستيراد: {str(e)}")
+
+# ✅ دالة استيراد العقود من Excel
+def import_contracts_from_excel(uploaded_file):
+    try:
+        df = pd.read_excel(uploaded_file)
+        required_cols = ["اسم المستأجر", "اسم العقار", "تاريخ البداية", "تاريخ النهاية"]
+        for col in required_cols:
+            if col not in df.columns:
+                st.error(f"يجب أن يحتوي الملف على عمود '{col}'")
+                return
+
+        conn = get_conn()
+        cur = conn.cursor()
+        tenants_dict = {row[1]: row[0] for row in cur.execute("SELECT id, name FROM tenants").fetchall()}
+        properties_dict = {row[1]: row[0] for row in cur.execute("SELECT id, name FROM properties").fetchall()}
+
+        imported = 0
+        errors = []
+        for idx, row in df.iterrows():
+            try:
+                tenant_name = str(row["اسم المستأجر"]).strip()
+                property_name = str(row["اسم العقار"]).strip()
+                if tenant_name not in tenants_dict:
+                    errors.append(f"صف {idx+2}: المستأجر '{tenant_name}' غير موجود")
+                    continue
+                if property_name not in properties_dict:
+                    errors.append(f"صف {idx+2}: العقار '{property_name}' غير موجود")
+                    continue
+
+                tenant_id = tenants_dict[tenant_name]
+                property_id = properties_dict[property_name]
+
+                contract_number = str(row.get("رقم العقد", "")).strip() if "رقم العقد" in df.columns else ""
+                start_date = pd.to_datetime(row["تاريخ البداية"]).date()
+                end_date = pd.to_datetime(row["تاريخ النهاية"]).date()
+                rent_amount = float(row.get("قيمة الإيجار السنوي", 0.0)) if "قيمة الإيجار السنوي" in df.columns else 0.0
+                interval_months = int(row.get("دورية السداد (شهور)", 1)) if "دورية السداد (شهور)" in df.columns else 1
+                deposit_amount = float(row.get("التأمين", 0.0)) if "التأمين" in df.columns else 0.0
+                tax_included = 1 if row.get("شامل الضريبة", False) else 0
+                tax_rate = float(row.get("نسبة الضريبة", 0.15)) if "نسبة الضريبة" in df.columns else 0.15
+                notes = str(row.get("ملاحظات", "")).strip() if "ملاحظات" in df.columns else ""
+
+                if start_date >= end_date:
+                    errors.append(f"صف {idx+2}: تاريخ البداية بعد تاريخ النهاية")
+                    continue
+
+                cur.execute('''
+                    INSERT INTO contracts (tenant_id, property_id, contract_number, start_date, end_date,
+                                           rent_amount, interval_months, deposit_amount, notes,
+                                           tax_included, tax_rate)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ''', (tenant_id, property_id, contract_number, start_date.isoformat(), end_date.isoformat(),
+                      rent_amount, interval_months, deposit_amount, notes,
+                      tax_included, tax_rate))
+                contract_id = cur.lastrowid
+                # توليد الدفعات
+                count = create_payment_schedule(contract_id, tenant_id, start_date, end_date, rent_amount, interval_months)
+                imported += 1
+            except Exception as e:
+                errors.append(f"صف {idx+2}: {str(e)}")
+
+        conn.commit()
+        conn.close()
+        st.cache_data.clear()
+        if imported > 0:
+            st.success(f"تم استيراد {imported} عقد بنجاح")
+        if errors:
+            st.warning("بعض الأخطاء: " + "; ".join(errors[:10]))
     except Exception as e:
         st.error(f"حدث خطأ أثناء الاستيراد: {str(e)}")
 
@@ -1254,7 +1334,7 @@ elif menu == "المستأجرين":
                         cur = conn.cursor()
                         cur.execute("SELECT * FROM tenants WHERE id = ?", (tenant_id,))
                         tenant = cur.fetchone()
-                        st.write(f"**الاسم:** {tenant[1]} | **الهاتف:** {tenant[2]} | **المنطقة:** {tenant[5]}")
+                        st.write(f"**الاسم:** {tenant[1]} | **الهاتف:** {tenant[2]} | **المنطقة:** {tenant[5]} | **رقم العقد:** {filtered_tenants[filtered_tenants['الرقم']==tenant_id]['رقم العقد'].iloc[0]}")
 
                         if current_role == 'مدير' or (current_role == 'محاسب' and has_permission(current_user_id, "المستأجرين")):
                             col_edit, col_del = st.columns(2)
@@ -1441,7 +1521,7 @@ elif menu == "العقود":
     if not has_permission(current_user_id, "العقود"):
         st.error("لا تملك صلاحية الوصول لهذه الصفحة")
     else:
-        tab1, tab2 = st.tabs(["عرض الكل", "إنشاء / تعديل عقد"])
+        tab1, tab2, tab3 = st.tabs(["عرض الكل", "إنشاء / تعديل عقد", "استيراد من Excel"])
         with tab1:
             df_contracts = load_contracts()
             if not df_contracts.empty:
@@ -1524,9 +1604,9 @@ elif menu == "العقود":
                                         cur.execute("DELETE FROM payments WHERE contract_id = ?", (contract_id,))
                                         conn.commit()
                                         conn.close()
-                                        create_payment_schedule(contract_id, tenant_id, start_date, end_date, rent_amount, interval_months)
+                                        count = create_payment_schedule(contract_id, tenant_id, start_date, end_date, rent_amount, interval_months)
                                         st.cache_data.clear()
-                                        st.success("تم تحديث العقد وإعادة جدولة الدفعات")
+                                        st.success(f"تم تحديث العقد وإعادة جدولة الدفعات ({count} دفعة)")
                                         st.session_state['edit_contract_id'] = None
                                         st.rerun()
                 else:
@@ -1573,12 +1653,20 @@ elif menu == "العقود":
                                 contract_id = cur.lastrowid
                                 conn.commit()
                                 conn.close()
-                                create_payment_schedule(contract_id, tenant_id, start_date, end_date, rent_amount, interval_months)
+                                count = create_payment_schedule(contract_id, tenant_id, start_date, end_date, rent_amount, interval_months)
                                 st.cache_data.clear()
-                                st.success("تم إنشاء العقد وجدولة الدفعات")
+                                st.success(f"تم إنشاء العقد وجدولة الدفعات ({count} دفعة)")
                                 st.rerun()
             else:
                 st.warning("لا تملك صلاحية الإضافة")
+        with tab3:
+            if current_role == 'مدير':
+                uploaded_file = st.file_uploader("اختر ملف Excel", type=["xlsx", "xls"], key="contract_excel_upload")
+                if uploaded_file is not None:
+                    if st.button("استيراد العقود", key="import_contracts_btn"):
+                        import_contracts_from_excel(uploaded_file)
+            else:
+                st.warning("لا تملك صلاحية الاستيراد")
 
 # ================== الدفعات (عرض وتعديل فقط) ==================
 elif menu == "الدفعات":
@@ -2222,7 +2310,6 @@ elif menu == "نسخ احتياطي":
             st.warning("يرجى إدخال بيانات تيليجرام في صفحة الإعدادات أولاً")
         else:
             if st.button("⬆️ رفع قاعدة البيانات إلى تيليجرام"):
-                # إرسال ملف قاعدة البيانات مباشرة
                 url = f"https://api.telegram.org/bot{telegram_bot_token}/sendDocument"
                 try:
                     with open("rentals.db", "rb") as f:
@@ -2233,7 +2320,6 @@ elif menu == "نسخ احتياطي":
                             save_setting('telegram_file_id', file_id)
                             st.success("تم رفع قاعدة البيانات إلى تيليجرام بنجاح")
                             st.info(f"📎 معرّف الملف (File ID) الحالي: `{file_id}`")
-                            st.write("تم حفظ المعرّف تلقائيًا في الإعدادات")
                         else:
                             st.error("فشل استخراج معرّف الملف من الاستجابة")
                     else:
