@@ -491,6 +491,7 @@ def init_db():
             tax_included INTEGER DEFAULT 0,
             tax_rate REAL DEFAULT 0.15,
             contract_file BLOB,
+            UNIQUE(contract_number),
             FOREIGN KEY (tenant_id) REFERENCES tenants(id),
             FOREIGN KEY (property_id) REFERENCES properties(id)
         )
@@ -893,7 +894,24 @@ def add_note(tenant_id, note_text, priority='عادية', is_alert=0):
 def generate_receipt_number():
     return f"RCP-{int(time.time())}"
 
+def generate_contract_number():
+    """توليد رقم عقد فريد تلقائيًا"""
+    conn = get_conn()
+    cur = conn.cursor()
+    today_str = date.today().strftime("%Y%m%d")
+    while True:
+        num = f"CTR-{today_str}-{int(time.time() * 1000) % 100000:05d}"
+        existing = cur.execute("SELECT id FROM contracts WHERE contract_number = ?", (num,)).fetchone()
+        if not existing:
+            break
+    conn.close()
+    return num
+
 def create_payment_schedule(contract_id, tenant_id, start_date, end_date, rent_amount, interval_months):
+    """
+    إنشاء جدول دفعات من start_date إلى end_date بفاصل interval_months.
+    rent_amount هو الإيجار السنوي، والدفعة = rent_amount * interval_months / 12
+    """
     step = relativedelta(months=interval_months)
     current = start_date
     conn = get_conn()
@@ -1125,6 +1143,7 @@ def import_contracts_from_excel(uploaded_file):
         cur = conn.cursor()
         tenants_dict = {row[1]: row[0] for row in cur.execute("SELECT id, name FROM tenants").fetchall()}
         properties_dict = {row[1]: row[0] for row in cur.execute("SELECT id, name FROM properties").fetchall()}
+        existing_contract_numbers = {row[0] for row in cur.execute("SELECT contract_number FROM contracts WHERE contract_number IS NOT NULL").fetchall()}
 
         imported = 0
         skipped = 0
@@ -1144,6 +1163,12 @@ def import_contracts_from_excel(uploaded_file):
                 property_id = properties_dict[property_name]
 
                 contract_number = str(row.get("رقم العقد", "")).strip() if "رقم العقد" in df.columns else ""
+                if not contract_number:
+                    contract_number = generate_contract_number()
+                elif contract_number in existing_contract_numbers:
+                    skipped += 1
+                    continue
+
                 start_date = pd.to_datetime(row["تاريخ البداية"]).date()
                 end_date = pd.to_datetime(row["تاريخ النهاية"]).date()
                 rent_amount = float(row.get("قيمة الإيجار السنوي", 0.0)) if "قيمة الإيجار السنوي" in df.columns else 0.0
@@ -1157,19 +1182,6 @@ def import_contracts_from_excel(uploaded_file):
                     errors.append(f"صف {idx+2}: تاريخ البداية بعد تاريخ النهاية")
                     continue
 
-                # فحص التكرار: نفس رقم العقد أو نفس المستأجر/العقار/التواريخ
-                existing = None
-                if contract_number:
-                    existing = cur.execute("SELECT id FROM contracts WHERE contract_number = ?", (contract_number,)).fetchone()
-                if not existing:
-                    existing = cur.execute("""
-                        SELECT id FROM contracts 
-                        WHERE tenant_id=? AND property_id=? AND start_date=? AND end_date=?
-                    """, (tenant_id, property_id, start_date.isoformat(), end_date.isoformat())).fetchone()
-                if existing:
-                    skipped += 1
-                    continue
-
                 cur.execute('''
                     INSERT INTO contracts (tenant_id, property_id, contract_number, start_date, end_date,
                                            rent_amount, interval_months, deposit_amount, notes,
@@ -1181,6 +1193,7 @@ def import_contracts_from_excel(uploaded_file):
                 contract_id = cur.lastrowid
                 count = create_payment_schedule(contract_id, tenant_id, start_date, end_date, rent_amount, interval_months)
                 imported += 1
+                existing_contract_numbers.add(contract_number)
             except Exception as e:
                 errors.append(f"صف {idx+2}: {str(e)}")
 
@@ -1681,6 +1694,16 @@ elif menu == "العقود":
                             if start_date >= end_date:
                                 st.error("تاريخ النهاية يجب أن يكون بعد البداية")
                             else:
+                                # التحقق من رقم العقد
+                                if not contract_number:
+                                    contract_number = generate_contract_number()
+                                else:
+                                    # التأكد من عدم وجود رقم مكرر
+                                    existing = get_conn().execute("SELECT id FROM contracts WHERE contract_number = ?", (contract_number,)).fetchone()
+                                    if existing:
+                                        st.error("رقم العقد موجود بالفعل، يرجى استخدام رقم آخر")
+                                        st.stop()
+
                                 file_bytes = None
                                 if contract_file is not None:
                                     file_bytes = contract_file.read()
