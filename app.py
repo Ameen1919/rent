@@ -72,7 +72,12 @@ def parse_date_safe(value, default=None):
             return default or date.today()
 
 def format_currency(value):
-    return f"{value:,.2f}"
+    # Handle None or non-numeric gracefully
+    try:
+        val = float(value)
+        return f"{val:,.2f}"
+    except (TypeError, ValueError):
+        return "0.00"
 
 def split_header_text(col):
     if col == 'المبلغ شامل الضريبة':
@@ -1075,6 +1080,57 @@ def update_receipt_amount(receipt_id, new_amount):
     st.cache_data.clear()
     return True, "تم تعديل السند بنجاح"
 
+# ================== دوال القوالب (Templates) ==================
+def download_tenants_template():
+    df = pd.DataFrame(columns=[
+        "الاسم", "الهاتف", "رقم الهوية / الإقامة", "العنوان", "المنطقة", "ملاحظات"
+    ])
+    df.loc[0] = ["مثال: أحمد محمد", "0501234567", "1234567890", "شارع الملك فهد", "الرياض", "مثال"]
+    output = io.BytesIO()
+    with pd.ExcelWriter(output, engine='xlsxwriter') as writer:
+        df.to_excel(writer, index=False, sheet_name='المستأجرين')
+    output.seek(0)
+    st.download_button(
+        label="تحميل قالب استيراد المستأجرين",
+        data=output.getvalue(),
+        file_name="نموذج_استيراد_المستأجرين.xlsx",
+        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+    )
+
+def download_contracts_template():
+    df = pd.DataFrame(columns=[
+        "اسم المستأجر", "اسم العقار", "تاريخ البداية", "تاريخ النهاية",
+        "قيمة الإيجار السنوي", "دورية السداد (شهور)", "التأمين",
+        "شامل الضريبة", "نسبة الضريبة", "ملاحظات"
+    ])
+    df.loc[0] = ["أحمد محمد", "عمارة النخبة", "2025-01-01", "2025-12-31", 60000, 6, 5000, 0, 0.15, "مثال"]
+    output = io.BytesIO()
+    with pd.ExcelWriter(output, engine='xlsxwriter') as writer:
+        df.to_excel(writer, index=False, sheet_name='العقود')
+    output.seek(0)
+    st.download_button(
+        label="تحميل قالب استيراد العقود",
+        data=output.getvalue(),
+        file_name="نموذج_استيراد_العقود.xlsx",
+        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+    )
+
+def download_properties_template():
+    df = pd.DataFrame(columns=[
+        "الاسم", "الوصف", "العنوان", "المنطقة", "المساحة"
+    ])
+    df.loc[0] = ["عمارة النخبة", "عمارة سكنية 4 شقق", "حي الروضة", "جدة", "500 م²"]
+    output = io.BytesIO()
+    with pd.ExcelWriter(output, engine='xlsxwriter') as writer:
+        df.to_excel(writer, index=False, sheet_name='العقارات')
+    output.seek(0)
+    st.download_button(
+        label="تحميل قالب استيراد العقارات",
+        data=output.getvalue(),
+        file_name="نموذج_استيراد_العقارات.xlsx",
+        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+    )
+
 # ================== لوحة التحكم ==================
 if menu == "لوحة التحكم" and has_permission(current_user_id, "لوحة التحكم"):
     st.subheader("📊 لوحة التحكم")
@@ -1135,12 +1191,15 @@ elif menu == "إدارة البيانات":
         # ----- تبويب المستأجرين -----
         with data_tab1:
             st.subheader("👥 المستأجرين")
-            # إضافة استيراد Excel
-            uploaded_tenants = st.file_uploader("استيراد مستأجرين من Excel", type=["xlsx", "xls"], key="import_tenants")
-            if uploaded_tenants is not None:
-                if st.button("تنفيذ استيراد المستأجرين", key="btn_import_tenants"):
-                    import_tenants_from_excel(uploaded_tenants)
-                    st.rerun()
+            col_import1, col_import2 = st.columns(2)
+            with col_import1:
+                download_tenants_template()
+            with col_import2:
+                uploaded_tenants = st.file_uploader("استيراد من Excel", type=["xlsx", "xls"], key="import_tenants")
+                if uploaded_tenants is not None:
+                    if st.button("تنفيذ الاستيراد", key="btn_import_tenants"):
+                        import_tenants_from_excel(uploaded_tenants)
+                        st.rerun()
             st.markdown("---")
 
             df_tenants = load_tenants()
@@ -1224,12 +1283,15 @@ elif menu == "إدارة البيانات":
         # ----- تبويب العقارات -----
         with data_tab2:
             st.subheader("🏬 العقارات")
-            # إضافة استيراد Excel
-            uploaded_properties = st.file_uploader("استيراد عقارات من Excel", type=["xlsx", "xls"], key="import_properties")
-            if uploaded_properties is not None:
-                if st.button("تنفيذ استيراد العقارات", key="btn_import_properties"):
-                    import_properties_from_excel(uploaded_properties)
-                    st.rerun()
+            col_import1, col_import2 = st.columns(2)
+            with col_import1:
+                download_properties_template()
+            with col_import2:
+                uploaded_properties = st.file_uploader("استيراد من Excel", type=["xlsx", "xls"], key="import_properties")
+                if uploaded_properties is not None:
+                    if st.button("تنفيذ الاستيراد", key="btn_import_properties"):
+                        import_properties_from_excel(uploaded_properties)
+                        st.rerun()
             st.markdown("---")
 
             df_props = load_properties()
@@ -1307,12 +1369,15 @@ elif menu == "إدارة البيانات":
         # ----- تبويب العقود -----
         with data_tab3:
             st.subheader("📄 العقود")
-            # إضافة استيراد Excel
-            uploaded_contracts = st.file_uploader("استيراد عقود من Excel", type=["xlsx", "xls"], key="import_contracts")
-            if uploaded_contracts is not None:
-                if st.button("تنفيذ استيراد العقود", key="btn_import_contracts"):
-                    import_contracts_from_excel(uploaded_contracts)
-                    st.rerun()
+            col_import1, col_import2 = st.columns(2)
+            with col_import1:
+                download_contracts_template()
+            with col_import2:
+                uploaded_contracts = st.file_uploader("استيراد من Excel", type=["xlsx", "xls"], key="import_contracts")
+                if uploaded_contracts is not None:
+                    if st.button("تنفيذ الاستيراد", key="btn_import_contracts"):
+                        import_contracts_from_excel(uploaded_contracts)
+                        st.rerun()
             st.markdown("---")
 
             df_contracts = load_contracts()
