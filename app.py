@@ -96,20 +96,322 @@ def draw_centered_multiline(c, text_lines, x_center, y, font_name, font_size):
         c.drawCentredString(x_center, start_y - i * line_height, reshape_arabic_text(line))
 
 def export_df_to_pdf(df, title, file_name, columns_order=None, extra_info=None):
-    # نفس الدالة السابقة (تم اختصارها لتوفير المساحة)
-    pass
+    if columns_order:
+        df = df[columns_order]
+    else:
+        df = df.copy()
+    df_numeric = df.copy()
+    for col in df_numeric.columns:
+        try:
+            df_numeric[col] = df_numeric[col].apply(parse_currency)
+        except:
+            pass
+    buffer = io.BytesIO()
+    c = canvas.Canvas(buffer, pagesize=A4)
+    width, height = A4
+    font_name = setup_arabic_font()
+    c.setFont(font_name, 10)
+    c.setFillColor(colors.HexColor("#4A90E2"))
+    c.rect(0, height-30, width, 30, fill=1, stroke=0)
+    c.setFillColor(colors.white)
+    c.setFont(font_name, 16)
+    c.drawCentredString(width/2, height-20, reshape_arabic_text(title))
+    y_extra = height - 50
+    if extra_info:
+        c.setFillColor(colors.black)
+        c.setFont(font_name, 12)
+        c.drawCentredString(width/2, y_extra, reshape_arabic_text(extra_info))
+        y_extra -= 20
+    actual_columns = list(df.columns)
+    headers = ["م"] + actual_columns
+    col_widths = []
+    for col in headers:
+        if col == "م":
+            col_widths.append(30)
+        else:
+            if col in ['المبلغ', 'المدفوع', 'المتبقي', 'المبلغ شامل الضريبة', 'مبلغ الضريبة', 'المبلغ غير شامل الضريبة']:
+                col_widths.append(80)
+            elif col in ['تاريخ الاستحقاق', 'تاريخ السداد', 'بداية الفترة', 'نهاية الفترة']:
+                col_widths.append(100)
+            else:
+                width_est = max(len(reshape_arabic_text(col)) * 4, 80)
+                col_widths.append(width_est)
+    total_width = sum(col_widths)
+    x_start = (width - total_width) / 2
+    if x_start < 30:
+        x_start = 30
+    y = y_extra - 20 if extra_info else height - 60
+    c.setFont(font_name, 8)
+    c.setFillColor(colors.HexColor("#f0f0f0"))
+    c.rect(x_start, y-12, total_width, 20, fill=1, stroke=0)
+    c.setFillColor(colors.black)
+    x_cursor = x_start + total_width
+    for i, header in enumerate(headers):
+        col_w = col_widths[i]
+        x_right = x_cursor
+        x_left = x_cursor - col_w
+        c.drawCentredString((x_left + x_right) / 2, y, reshape_arabic_text(header))
+        x_cursor -= col_w
+    y -= 25
+    c.setFillColor(colors.white)
+    serial = 1
+    for _, row in df.iterrows():
+        if y < 50:
+            c.showPage()
+            c.setFont(font_name, 8)
+            y = height - 50
+            c.setFillColor(colors.HexColor("#f0f0f0"))
+            c.rect(x_start, y-12, total_width, 20, fill=1, stroke=0)
+            c.setFillColor(colors.black)
+            x_cursor = x_start + total_width
+            for i, header in enumerate(headers):
+                col_w = col_widths[i]
+                x_right = x_cursor
+                x_left = x_cursor - col_w
+                c.drawCentredString((x_left + x_right) / 2, y, reshape_arabic_text(header))
+                x_cursor -= col_w
+            y -= 25
+        c.setFillColor(colors.white)
+        c.rect(x_start, y-5, total_width, 15, fill=1, stroke=0)
+        c.setFillColor(colors.black)
+        col_w = col_widths[0]
+        x_right = x_start + total_width
+        x_left = x_right - col_w
+        c.drawCentredString((x_left + x_right) / 2, y, str(serial))
+        serial += 1
+        x_cursor = x_right - col_w
+        for i, col in enumerate(actual_columns, start=1):
+            col_w = col_widths[i]
+            x_right = x_cursor
+            x_left = x_cursor - col_w
+            value = row[col]
+            if isinstance(value, (int, float)):
+                value_str = format_currency(value)
+            else:
+                value_str = str(value)
+            c.drawRightString(x_right - 5, y, reshape_arabic_text(value_str))
+            x_cursor -= col_w
+        c.setStrokeColor(colors.grey)
+        c.setLineWidth(0.5)
+        c.line(x_start, y+10, x_start+total_width, y+10)
+        c.line(x_start, y-5, x_start+total_width, y-5)
+        x_cursor = x_start + total_width
+        for i in range(len(headers)):
+            c.line(x_cursor, y+10, x_cursor, y-5)
+            x_cursor -= col_widths[i]
+        c.line(x_start, y+10, x_start, y-5)
+        y -= 15
+    c.line(x_start, y+5, x_start+total_width, y+5)
+    y -= 5
+    c.setFillColor(colors.HexColor("#e8f0fe"))
+    c.rect(x_start, y-5, total_width, 15, fill=1, stroke=0)
+    c.setFillColor(colors.black)
+    col_w = col_widths[0]
+    x_right = x_start + total_width
+    x_left = x_right - col_w
+    c.drawCentredString((x_left + x_right) / 2, y, reshape_arabic_text("الإجمالي"))
+    x_cursor = x_right - col_w
+    for i, col in enumerate(actual_columns, start=1):
+        col_w = col_widths[i]
+        x_right = x_cursor
+        x_left = x_cursor - col_w
+        try:
+            total_val = df_numeric[col].sum()
+            c.drawRightString(x_right - 5, y, format_currency(total_val))
+        except:
+            pass
+        x_cursor -= col_w
+    c.save()
+    buffer.seek(0)
+    st.download_button("تحميل PDF", data=buffer, file_name=file_name, mime="application/pdf")
 
 def export_tax_pdf(df, title, file_name, columns_order=None):
-    # نفس الدالة السابقة
-    pass
+    if columns_order:
+        df = df[columns_order]
+    else:
+        df = df.copy()
+    df_numeric = df.copy()
+    for col in ['المبلغ شامل الضريبة', 'مبلغ الضريبة', 'المبلغ غير شامل الضريبة']:
+        if col in df_numeric.columns:
+            df_numeric[col] = df_numeric[col].apply(parse_currency)
+    buffer = io.BytesIO()
+    c = canvas.Canvas(buffer, pagesize=landscape(A4))
+    width, height = landscape(A4)
+    font_name = setup_arabic_font()
+    c.setFont(font_name, 10)
+    c.setFillColor(colors.HexColor("#4A90E2"))
+    c.rect(0, height-30, width, 30, fill=1, stroke=0)
+    c.setFillColor(colors.white)
+    c.setFont(font_name, 16)
+    c.drawCentredString(width/2, height-20, reshape_arabic_text(title))
+    actual_columns = list(df.columns)
+    headers = ["م"] + actual_columns
+    col_widths = []
+    for col in headers:
+        if col == "م":
+            col_widths.append(25)
+        elif col in ['المبلغ شامل الضريبة', 'مبلغ الضريبة', 'المبلغ غير شامل الضريبة']:
+            col_widths.append(75)
+        elif col == 'نسبة الضريبة':
+            col_widths.append(50)
+        elif col in ['بداية الفترة', 'نهاية الفترة']:
+            col_widths.append(85)
+        elif col == 'اسم المستأجر':
+            col_widths.append(100)
+        elif col == 'رقم العقد':
+            col_widths.append(80)
+        elif col == 'طريقة الدفع':
+            col_widths.append(70)
+        else:
+            width_est = max(len(reshape_arabic_text(col)) * 3.5, 70)
+            col_widths.append(width_est)
+    total_width = sum(col_widths)
+    x_start = (width - total_width) / 2
+    if x_start < 20:
+        x_start = 20
+    y = height - 60
+    c.setFont(font_name, 7)
+    c.setFillColor(colors.HexColor("#f0f0f0"))
+    c.rect(x_start, y-18, total_width, 28, fill=1, stroke=0)
+    c.setFillColor(colors.black)
+    x_cursor = x_start + total_width
+    for i, header in enumerate(headers):
+        col_w = col_widths[i]
+        x_right = x_cursor
+        x_left = x_cursor - col_w
+        x_center = (x_left + x_right) / 2
+        if header == "م":
+            c.drawCentredString(x_center, y-2, "م")
+        else:
+            text_lines = split_header_text(header)
+            if len(text_lines) == 1:
+                c.drawCentredString(x_center, y-2, reshape_arabic_text(text_lines[0]))
+            else:
+                draw_centered_multiline(c, text_lines, x_center, y-8, font_name, 7)
+        x_cursor -= col_w
+    y -= 30
+    c.setFont(font_name, 8)
+    serial = 1
+    for _, row in df.iterrows():
+        if y < 50:
+            c.showPage()
+            c.setFont(font_name, 8)
+            y = height - 50
+            c.setFont(font_name, 7)
+            c.setFillColor(colors.HexColor("#f0f0f0"))
+            c.rect(x_start, y-18, total_width, 28, fill=1, stroke=0)
+            c.setFillColor(colors.black)
+            x_cursor = x_start + total_width
+            for i, header in enumerate(headers):
+                col_w = col_widths[i]
+                x_right = x_cursor
+                x_left = x_cursor - col_w
+                x_center = (x_left + x_right) / 2
+                if header == "م":
+                    c.drawCentredString(x_center, y-2, "م")
+                else:
+                    text_lines = split_header_text(header)
+                    if len(text_lines) == 1:
+                        c.drawCentredString(x_center, y-2, reshape_arabic_text(text_lines[0]))
+                    else:
+                        draw_centered_multiline(c, text_lines, x_center, y-8, font_name, 7)
+                x_cursor -= col_w
+            y -= 30
+            c.setFont(font_name, 8)
+        c.setFillColor(colors.white)
+        c.rect(x_start, y-5, total_width, 18, fill=1, stroke=0)
+        c.setFillColor(colors.black)
+        col_w = col_widths[0]
+        x_right = x_start + total_width
+        x_left = x_right - col_w
+        c.drawCentredString((x_left + x_right) / 2, y, str(serial))
+        serial += 1
+        x_cursor = x_right - col_w
+        for i, col in enumerate(actual_columns, start=1):
+            col_w = col_widths[i]
+            x_right = x_cursor
+            x_left = x_cursor - col_w
+            value = row[col]
+            if isinstance(value, (int, float)):
+                value_str = format_currency(value)
+            else:
+                value_str = str(value)
+            c.drawRightString(x_right - 5, y, reshape_arabic_text(value_str))
+            x_cursor -= col_w
+        c.setStrokeColor(colors.grey)
+        c.setLineWidth(0.5)
+        c.line(x_start, y+12, x_start+total_width, y+12)
+        c.line(x_start, y-5, x_start+total_width, y-5)
+        x_cursor = x_start + total_width
+        for i in range(len(headers)):
+            c.line(x_cursor, y+12, x_cursor, y-5)
+            x_cursor -= col_widths[i]
+        c.line(x_start, y+12, x_start, y-5)
+        y -= 18
+    c.line(x_start, y+5, x_start+total_width, y+5)
+    y -= 5
+    c.setFillColor(colors.HexColor("#e8f0fe"))
+    c.rect(x_start, y-5, total_width, 18, fill=1, stroke=0)
+    c.setFillColor(colors.black)
+    col_w = col_widths[0]
+    x_right = x_start + total_width
+    x_left = x_right - col_w
+    c.drawCentredString((x_left + x_right) / 2, y, reshape_arabic_text("الإجمالي"))
+    x_cursor = x_right - col_w
+    for i, col in enumerate(actual_columns, start=1):
+        col_w = col_widths[i]
+        x_right = x_cursor
+        x_left = x_cursor - col_w
+        if col in ['المبلغ شامل الضريبة', 'مبلغ الضريبة', 'المبلغ غير شامل الضريبة']:
+            total_val = df_numeric[col].sum()
+            c.drawRightString(x_right - 5, y, format_currency(total_val))
+        x_cursor -= col_w
+    c.save()
+    buffer.seek(0)
+    st.download_button("تحميل PDF", data=buffer, file_name=file_name, mime="application/pdf")
 
 def print_receipt(receipt_id):
-    # نفس الدالة السابقة
-    pass
+    conn = get_conn()
+    cur = conn.cursor()
+    cur.execute('''SELECT r.receipt_number, t.name, r.amount, r.receipt_date, r.payment_method, r.notes FROM receipts r JOIN tenants t ON r.tenant_id = t.id WHERE r.id = ?''', (receipt_id,))
+    receipt = cur.fetchone()
+    conn.close()
+    if not receipt:
+        st.error("السند غير موجود")
+        return None
+    receipt_no, tenant_name, amount, r_date, method, notes = receipt
+    buffer = io.BytesIO()
+    c = canvas.Canvas(buffer, pagesize=A4)
+    width, height = A4
+    font_name = setup_arabic_font()
+    c.setFont(font_name, 12)
+    c.setFillColor(colors.HexColor("#4A90E2"))
+    c.rect(0, height-40, width, 40, fill=1, stroke=0)
+    c.setFillColor(colors.white)
+    c.setFont(font_name, 18)
+    c.drawCentredString(width/2, height-25, reshape_arabic_text("سند قبض"))
+    c.setFont(font_name, 12)
+    c.setFillColor(colors.black)
+    y = height - 80
+    fields = [
+        ("رقم السند:", receipt_no),
+        ("اسم المستأجر:", tenant_name),
+        ("المبلغ:", format_currency(amount)),
+        ("تاريخ السداد:", r_date),
+        ("طريقة الدفع:", method),
+        ("ملاحظات:", notes or "لا يوجد")
+    ]
+    for label, value in fields:
+        c.drawRightString(width - 100, y, reshape_arabic_text(f"{label} {value}"))
+        y -= 25
+    c.save()
+    buffer.seek(0)
+    return buffer.getvalue()
 
 # ---------- إدارة قاعدة البيانات ----------
 def get_conn():
     conn = sqlite3.connect("rentals.db", timeout=10)
+    conn.row_factory = sqlite3.Row  # ✅ إضافة مهمة: جعل النتائج dict
     conn.execute("PRAGMA journal_mode=WAL;")
     conn.execute("PRAGMA synchronous=NORMAL;")
     return conn
@@ -798,7 +1100,6 @@ elif menu == "إدارة البيانات":
             st.subheader("👥 المستأجرين")
             df_tenants = load_tenants()
             if not df_tenants.empty:
-                # فلاتر
                 col_f1, col_f2 = st.columns(2)
                 with col_f1:
                     region_filter = st.selectbox("المنطقة", ["الكل"] + df_tenants["المنطقة"].dropna().unique().tolist(), key="tenant_region_filter")
@@ -812,15 +1113,12 @@ elif menu == "إدارة البيانات":
                     filtered = filtered[mask]
                 if not filtered.empty:
                     st.dataframe(filtered, use_container_width=True)
-                    # اختيار مستأجر
                     tenant_id = st.selectbox("اختر مستأجر", filtered["الرقم"], format_func=lambda x: filtered[filtered["الرقم"]==x]["الاسم"].iloc[0])
                     if tenant_id:
                         conn = get_conn()
                         cur = conn.cursor()
-                        # جلب بيانات المستأجر
                         tenant_info = cur.execute("SELECT * FROM tenants WHERE id=?", (tenant_id,)).fetchone()
                         st.markdown(f"**الاسم:** {tenant_info['name']} | **الهاتف:** {tenant_info['phone'] or 'غير محدد'} | **المنطقة:** {tenant_info['region'] or 'غير محدد'}")
-                        # جلب العقود المرتبطة
                         contracts = cur.execute("""
                             SELECT c.id, c.contract_number, p.name, c.start_date, c.end_date, c.status, c.rent_amount, c.interval_months
                             FROM contracts c JOIN properties p ON c.property_id=p.id WHERE c.tenant_id=?
@@ -832,7 +1130,6 @@ elif menu == "إدارة البيانات":
                             st.dataframe(df_contracts_tenant, use_container_width=True)
                         else:
                             st.info("لا توجد عقود لهذا المستأجر")
-                        # أزرار تعديل/حذف
                         if current_role == 'مدير':
                             c1, c2 = st.columns(2)
                             with c1:
@@ -841,7 +1138,6 @@ elif menu == "إدارة البيانات":
                                     st.rerun()
                             with c2:
                                 if st.button("حذف المستأجر", key="del_tenant_btn"):
-                                    # حذف المستأجر (مع التحقق من عدم وجود عقود)
                                     conn = get_conn()
                                     cur = conn.cursor()
                                     has_contracts = cur.execute("SELECT COUNT(*) FROM contracts WHERE tenant_id=?", (tenant_id,)).fetchone()[0]
@@ -853,7 +1149,6 @@ elif menu == "إدارة البيانات":
                                         st.success("تم الحذف")
                                         st.rerun()
                                     conn.close()
-                        # نموذج تعديل مستأجر
                         if 'edit_tenant_id' in st.session_state and st.session_state['edit_tenant_id'] == tenant_id:
                             conn = get_conn()
                             cur = conn.cursor()
@@ -900,7 +1195,6 @@ elif menu == "إدارة البيانات":
                         cur = conn.cursor()
                         prop_info = cur.execute("SELECT * FROM properties WHERE id=?", (prop_id,)).fetchone()
                         st.markdown(f"**الاسم:** {prop_info['name']} | **المنطقة:** {prop_info['region'] or 'غير محدد'} | **العنوان:** {prop_info['address'] or 'غير محدد'}")
-                        # العقود المرتبطة
                         contracts = cur.execute("""
                             SELECT c.id, c.contract_number, t.name, c.start_date, c.end_date, c.status
                             FROM contracts c JOIN tenants t ON c.tenant_id=t.id WHERE c.property_id=?
@@ -962,7 +1256,6 @@ elif menu == "إدارة البيانات":
             st.subheader("📄 العقود")
             df_contracts = load_contracts()
             if not df_contracts.empty:
-                # فلاتر
                 col_c1, col_c2 = st.columns(2)
                 with col_c1:
                     region_filter_c = st.selectbox("المنطقة", ["الكل"] + load_tenants()["المنطقة"].dropna().unique().tolist(), key="contract_region_filter")
@@ -970,7 +1263,6 @@ elif menu == "إدارة البيانات":
                     tenant_filter_c = st.selectbox("المستأجر", ["الكل"] + df_contracts["اسم المستأجر"].unique().tolist(), key="contract_tenant_filter")
                 filtered_c = df_contracts.copy()
                 if region_filter_c != "الكل":
-                    # نحتاج جلب المستأجرين في هذه المنطقة
                     tenants_in_region = load_tenants()[load_tenants()["المنطقة"] == region_filter_c]["الاسم"].tolist()
                     filtered_c = filtered_c[filtered_c["اسم المستأجر"].isin(tenants_in_region)]
                 if tenant_filter_c != "الكل":
@@ -990,7 +1282,6 @@ elif menu == "إدارة البيانات":
                             WHERE c.id=?
                         """, (contract_id,)).fetchone()
                         conn.close()
-                        # عرض تفاصيل العقد والمستأجر والعقار
                         st.markdown("### تفاصيل العقد")
                         col_d1, col_d2 = st.columns(2)
                         with col_d1:
@@ -1013,13 +1304,11 @@ elif menu == "إدارة البيانات":
                         st.write(f"**نسبة الضريبة:** {cinfo['tax_rate']*100:.1f}%")
                         st.write(f"**ملاحظات:** {cinfo['notes'] or 'لا يوجد'}")
 
-                        # عرض ملف العقد إذا وجد
                         if cinfo['contract_file']:
                             st.download_button("📥 تحميل ملف العقد", data=cinfo['contract_file'], file_name=f"contract_{contract_id}.pdf", mime="application/pdf")
                         else:
                             st.info("لا يوجد ملف عقد مرفق")
 
-                        # أزرار تعديل/حذف
                         if current_role == 'مدير':
                             c1, c2 = st.columns(2)
                             with c1:
@@ -1032,7 +1321,6 @@ elif menu == "إدارة البيانات":
                                     st.success("تم الحذف")
                                     st.rerun()
 
-                        # نموذج تعديل العقد مع ملف PDF
                         if 'edit_contract_id' in st.session_state and st.session_state['edit_contract_id'] == contract_id:
                             conn = get_conn()
                             cur = conn.cursor()
@@ -1057,13 +1345,11 @@ elif menu == "إدارة البيانات":
                                     if start_date >= end_date:
                                         st.error("تاريخ النهاية يجب أن يكون بعد البداية")
                                     else:
-                                        # التحقق من رقم العقد إذا تغير
                                         if contract_number != cdata['contract_number']:
                                             existing = get_conn().execute("SELECT id FROM contracts WHERE contract_number=? AND id!=?", (contract_number, contract_id)).fetchone()
                                             if existing:
                                                 st.error("رقم العقد موجود بالفعل")
                                                 st.stop()
-                                        # معالجة ملف PDF
                                         file_bytes = cdata['contract_file']
                                         if new_contract_file is not None:
                                             file_bytes = new_contract_file.read()
@@ -1075,7 +1361,6 @@ elif menu == "إدارة البيانات":
                                         """, (tenant_id, property_id, contract_number, start_date.isoformat(), end_date.isoformat(), rent_amount, interval_months, deposit_amount, 1 if tax_included else 0, tax_rate, notes, file_bytes, contract_id))
                                         conn.commit()
                                         conn.close()
-                                        # إعادة جدولة الدفعات
                                         conn = get_conn()
                                         cur = conn.cursor()
                                         cur.execute("DELETE FROM payments WHERE contract_id=?", (contract_id,))
@@ -1091,7 +1376,7 @@ elif menu == "إدارة البيانات":
             else:
                 st.info("لا توجد عقود")
 
-# ================== الدفعات (عرض وتعديل فقط) ==================
+# ================== الدفعات ==================
 elif menu == "الدفعات":
     st.subheader("💰 متابعة الدفعات")
     if not has_permission(current_user_id, "الدفعات"):
@@ -1147,7 +1432,7 @@ elif menu == "الدفعات":
             else:
                 st.warning("لا تملك صلاحية تعديل الدفعات")
 
-# ================== سندات القبض (تسجيل سداد + سجل) ==================
+# ================== سندات القبض ==================
 elif menu == "سندات القبض":
     st.subheader("🧾 سندات القبض")
     if not has_permission(current_user_id, "سندات القبض"):
@@ -1164,12 +1449,7 @@ elif menu == "سندات القبض":
                     today = date.today()
                     conn = get_conn()
                     cur = conn.cursor()
-                    cur.execute('''
-                        SELECT id, due_date, amount, paid_amount, (amount - paid_amount) as remaining
-                        FROM payments
-                        WHERE tenant_id = ? AND status != 'مدفوع' AND due_date <= ?
-                        ORDER BY due_date
-                    ''', (tenant_id, today.isoformat()))
+                    cur.execute('''SELECT id, due_date, amount, paid_amount, (amount - paid_amount) as remaining FROM payments WHERE tenant_id = ? AND status != 'مدفوع' AND due_date <= ? ORDER BY due_date''', (tenant_id, today.isoformat()))
                     dues = cur.fetchall()
                     conn.close()
                     if not dues:
@@ -1201,15 +1481,9 @@ elif menu == "سندات القبض":
                                     pay_data = cur.fetchone()
                                     new_paid = pay_data[1] + amount
                                     status = "مدفوع" if new_paid >= pay_data[0] else "جزئي"
-                                    cur.execute('''
-                                        UPDATE payments SET paid_amount = ?, paid_date = ?, status = ?, attachment = ?
-                                        WHERE id = ?
-                                    ''', (new_paid, payment_date.isoformat(), status, file_bytes, payment_id))
+                                    cur.execute('''UPDATE payments SET paid_amount = ?, paid_date = ?, status = ?, attachment = ? WHERE id = ?''', (new_paid, payment_date.isoformat(), status, file_bytes, payment_id))
                                     receipt_number = generate_receipt_number()
-                                    cur.execute('''
-                                        INSERT INTO receipts (receipt_number, tenant_id, contract_id, payment_id, amount, receipt_date, payment_method, attachment)
-                                        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-                                    ''', (receipt_number, tenant_id, pay_data[2], payment_id, amount, payment_date.isoformat(), method, file_bytes))
+                                    cur.execute('''INSERT INTO receipts (receipt_number, tenant_id, contract_id, payment_id, amount, receipt_date, payment_method, attachment) VALUES (?, ?, ?, ?, ?, ?, ?, ?)''', (receipt_number, tenant_id, pay_data[2], payment_id, amount, payment_date.isoformat(), method, file_bytes))
                                     conn.commit()
                                     conn.close()
                                     st.cache_data.clear()
@@ -1314,24 +1588,12 @@ elif menu == "التقارير":
                     cur = conn.cursor()
                     cur.execute("SELECT name, region FROM tenants WHERE id = ?", (tenant_id,))
                     tenant_name, tenant_region = cur.fetchone()
-                    cur.execute('''
-                        SELECT c.contract_number FROM contracts c 
-                        WHERE c.tenant_id = ? AND c.status='نشط'
-                        LIMIT 1
-                    ''', (tenant_id,))
+                    cur.execute('''SELECT c.contract_number FROM contracts c WHERE c.tenant_id = ? AND c.status='نشط' LIMIT 1''', (tenant_id,))
                     contract_row = cur.fetchone()
                     contract_no = contract_row[0] if contract_row else "لا يوجد"
-                    cur.execute('''
-                        SELECT id, due_date, amount, paid_amount, (amount - paid_amount) as remaining, status, paid_date, attachment
-                        FROM payments WHERE tenant_id = ? AND due_date BETWEEN ? AND ?
-                        ORDER BY due_date
-                    ''', (tenant_id, from_date.isoformat(), to_date.isoformat()))
+                    cur.execute('''SELECT id, due_date, amount, paid_amount, (amount - paid_amount) as remaining, status, paid_date, attachment FROM payments WHERE tenant_id = ? AND due_date BETWEEN ? AND ? ORDER BY due_date''', (tenant_id, from_date.isoformat(), to_date.isoformat()))
                     payments = cur.fetchall()
-                    cur.execute('''
-                        SELECT receipt_number, amount, receipt_date, payment_method, attachment
-                        FROM receipts WHERE tenant_id = ? AND receipt_date BETWEEN ? AND ?
-                        ORDER BY receipt_date DESC
-                    ''', (tenant_id, from_date.isoformat(), to_date.isoformat()))
+                    cur.execute('''SELECT receipt_number, amount, receipt_date, payment_method, attachment FROM receipts WHERE tenant_id = ? AND receipt_date BETWEEN ? AND ? ORDER BY receipt_date DESC''', (tenant_id, from_date.isoformat(), to_date.isoformat()))
                     receipts = cur.fetchall()
                     conn.close()
 
@@ -1347,12 +1609,7 @@ elif menu == "التقارير":
                             pay_id, due, amount, paid, remaining, status, paid_date, attachment = pay
                             with st.expander(f"📅 تاريخ الاستحقاق: {due} | المبلغ: {format_currency(amount)} | المدفوع: {format_currency(paid)} | المتبقي: {format_currency(remaining)} | الحالة: {status}"):
                                 if paid > 0 and attachment is not None:
-                                    st.download_button(
-                                        label="تحميل مرفق السداد",
-                                        data=attachment,
-                                        file_name=f"payment_{pay_id}_attachment.pdf",
-                                        mime="application/octet-stream"
-                                    )
+                                    st.download_button(label="تحميل مرفق السداد", data=attachment, file_name=f"payment_{pay_id}_attachment.pdf", mime="application/octet-stream")
                                 else:
                                     st.write("لا يوجد مرفق لهذه الدفعة.")
                         total_amount = sum(p[2] for p in payments)
@@ -1369,33 +1626,21 @@ elif menu == "التقارير":
                             receipt_no, amount, rec_date, method, attachment = rec
                             with st.expander(f"🧾 سند: {receipt_no} | المبلغ: {format_currency(amount)} | التاريخ: {rec_date} | الطريقة: {method}"):
                                 if attachment is not None:
-                                    st.download_button(
-                                        label="تحميل المرفق",
-                                        data=attachment,
-                                        file_name=f"receipt_{receipt_no}_attachment.pdf",
-                                        mime="application/octet-stream"
-                                    )
+                                    st.download_button(label="تحميل المرفق", data=attachment, file_name=f"receipt_{receipt_no}_attachment.pdf", mime="application/octet-stream")
                                 else:
                                     st.write("لا يوجد مرفق.")
                     else:
                         st.info("لا توجد سندات في هذه الفترة")
 
                     if payments:
-                        df_payments_export = pd.DataFrame(
-                            [(p[1], p[2], p[3], p[2]-p[3], p[5], p[6]) for p in payments],
-                            columns=["تاريخ الاستحقاق", "المبلغ", "المدفوع", "المتبقي", "الحالة", "تاريخ السداد"]
-                        )
+                        df_payments_export = pd.DataFrame([(p[1], p[2], p[3], p[2]-p[3], p[5], p[6]) for p in payments], columns=["تاريخ الاستحقاق", "المبلغ", "المدفوع", "المتبقي", "الحالة", "تاريخ السداد"])
                         output = io.BytesIO()
                         with pd.ExcelWriter(output, engine='xlsxwriter') as writer:
                             df_payments_export.to_excel(writer, sheet_name='الدفعات', index=False)
                             if receipts:
-                                df_receipts_export = pd.DataFrame(
-                                    [(r[0], r[1], r[2], r[3]) for r in receipts],
-                                    columns=["رقم السند", "المبلغ", "التاريخ", "الطريقة"]
-                                )
+                                df_receipts_export = pd.DataFrame([(r[0], r[1], r[2], r[3]) for r in receipts], columns=["رقم السند", "المبلغ", "التاريخ", "الطريقة"])
                                 df_receipts_export.to_excel(writer, sheet_name='سندات', index=False)
                         st.download_button("تحميل Excel", data=output.getvalue(), file_name=f"كشف_حساب_{tenant_name}_{from_date}_to_{to_date}.xlsx")
-
                         extra_info = f"المنطقة: {tenant_region or 'غير محدد'} - رقم العقد: {contract_no}"
                         pdf_title = f"كشف حساب {tenant_name} من {from_date} إلى {to_date}"
                         export_df_to_pdf(df_payments_export, pdf_title, f"كشف_حساب_{tenant_name}_{from_date}_to_{to_date}.pdf", extra_info=extra_info)
@@ -1425,17 +1670,7 @@ elif menu == "التقارير":
 
             conn = get_conn()
             cur = conn.cursor()
-            query = '''
-                SELECT t.name as 'المستأجر', p.name as 'العقار', pay.due_date as 'تاريخ الاستحقاق', 
-                       pay.amount as 'المبلغ', pay.paid_amount as 'المدفوع',
-                       (pay.amount - pay.paid_amount) as 'المتبقي', pay.status as 'الحالة',
-                       t.region as 'المنطقة'
-                FROM payments pay
-                JOIN tenants t ON pay.tenant_id = t.id
-                JOIN contracts c ON pay.contract_id = c.id
-                JOIN properties p ON c.property_id = p.id
-                WHERE pay.due_date BETWEEN ? AND ?
-            '''
+            query = '''SELECT t.name as 'المستأجر', p.name as 'العقار', pay.due_date as 'تاريخ الاستحقاق', pay.amount as 'المبلغ', pay.paid_amount as 'المدفوع', (pay.amount - pay.paid_amount) as 'المتبقي', pay.status as 'الحالة', t.region as 'المنطقة' FROM payments pay JOIN tenants t ON pay.tenant_id = t.id JOIN contracts c ON pay.contract_id = c.id JOIN properties p ON c.property_id = p.id WHERE pay.due_date BETWEEN ? AND ?'''
             params = [from_date.isoformat(), to_date.isoformat()]
             if tenant_filter != "الكل":
                 query += " AND t.name = ?"
@@ -1485,14 +1720,7 @@ elif menu == "التقارير":
                 with col2:
                     to_date = st.date_input("إلى تاريخ", value=date.today())
             conn = get_conn()
-            query = '''
-                SELECT r.receipt_date as 'التاريخ', t.name as 'المستأجر', r.receipt_number as 'رقم السند',
-                       r.amount as 'المبلغ', r.payment_method as 'طريقة السداد'
-                FROM receipts r
-                JOIN tenants t ON r.tenant_id = t.id
-                WHERE r.receipt_date BETWEEN ? AND ?
-                ORDER BY r.receipt_date
-            '''
+            query = '''SELECT r.receipt_date as 'التاريخ', t.name as 'المستأجر', r.receipt_number as 'رقم السند', r.amount as 'المبلغ', r.payment_method as 'طريقة السداد' FROM receipts r JOIN tenants t ON r.tenant_id = t.id WHERE r.receipt_date BETWEEN ? AND ? ORDER BY r.receipt_date'''
             df = pd.read_sql_query(query, conn, params=(from_date.isoformat(), to_date.isoformat()))
             conn.close()
             if not df.empty:
@@ -1528,22 +1756,7 @@ elif menu == "التقارير":
                 with col2:
                     to_date = st.date_input("إلى تاريخ", value=date.today())
             conn = get_conn()
-            query = '''
-                SELECT t.name as 'اسم المستأجر',
-                       c.contract_number as 'رقم العقد',
-                       c.start_date as 'بداية الفترة',
-                       c.end_date as 'نهاية الفترة',
-                       pay.amount as 'المبلغ شامل الضريبة',
-                       c.tax_included as 'شامل الضريبة',
-                       c.tax_rate as 'نسبة الضريبة',
-                       r.payment_method as 'طريقة الدفع'
-                FROM payments pay
-                JOIN tenants t ON pay.tenant_id = t.id
-                JOIN contracts c ON pay.contract_id = c.id
-                LEFT JOIN receipts r ON r.payment_id = pay.id
-                WHERE pay.status = 'مدفوع' AND pay.paid_date BETWEEN ? AND ?
-                ORDER BY pay.paid_date
-            '''
+            query = '''SELECT t.name as 'اسم المستأجر', c.contract_number as 'رقم العقد', c.start_date as 'بداية الفترة', c.end_date as 'نهاية الفترة', pay.amount as 'المبلغ شامل الضريبة', c.tax_included as 'شامل الضريبة', c.tax_rate as 'نسبة الضريبة', r.payment_method as 'طريقة الدفع' FROM payments pay JOIN tenants t ON pay.tenant_id = t.id JOIN contracts c ON pay.contract_id = c.id LEFT JOIN receipts r ON r.payment_id = pay.id WHERE pay.status = 'مدفوع' AND pay.paid_date BETWEEN ? AND ? ORDER BY pay.paid_date'''
             df = pd.read_sql_query(query, conn, params=(from_date.isoformat(), to_date.isoformat()))
             conn.close()
             if not df.empty:
@@ -1562,8 +1775,7 @@ elif menu == "التقارير":
                     tax_values.append(tax)
                 df['مبلغ الضريبة'] = tax_values
                 df['المبلغ غير شامل الضريبة'] = df['المبلغ شامل الضريبة'] - df['مبلغ الضريبة']
-                df = df[['اسم المستأجر', 'رقم العقد', 'بداية الفترة', 'نهاية الفترة',
-                         'المبلغ شامل الضريبة', 'نسبة الضريبة', 'مبلغ الضريبة', 'المبلغ غير شامل الضريبة', 'طريقة الدفع']]
+                df = df[['اسم المستأجر', 'رقم العقد', 'بداية الفترة', 'نهاية الفترة', 'المبلغ شامل الضريبة', 'نسبة الضريبة', 'مبلغ الضريبة', 'المبلغ غير شامل الضريبة', 'طريقة الدفع']]
                 df_display, selected_cols = display_dataframe_with_reorder(df.copy(), "report_tax")
                 total_amount = df['المبلغ شامل الضريبة'].sum()
                 total_tax = df['مبلغ الضريبة'].sum()
@@ -1605,7 +1817,6 @@ elif menu == "المستخدمون":
                         delete_user(user_id)
                         st.success("تم حذف المستخدم")
                         st.rerun()
-                    # إضافة تغيير كلمة المرور
                     if current_role == 'مدير':
                         with st.expander("تغيير كلمة المرور"):
                             new_password = st.text_input("كلمة المرور الجديدة", type="password", key=f"new_pass_{user_id}")
@@ -1666,7 +1877,6 @@ elif menu == "الإعدادات":
                 st.success("تم حفظ الإعدادات بنجاح")
                 st.rerun()
 
-        # إعدادات تيليجرام
         st.markdown("---")
         st.subheader("📱 إعداد تيليجرام للنسخ الاحتياطي")
         with st.form("telegram_settings_form"):
