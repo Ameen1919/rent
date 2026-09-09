@@ -956,6 +956,43 @@ def import_contracts_from_excel(uploaded_file):
     except Exception as e:
         st.error(f"حدث خطأ أثناء الاستيراد: {str(e)}")
 
+def import_properties_from_excel(uploaded_file):
+    try:
+        df = pd.read_excel(uploaded_file)
+        required_cols = ["الاسم"]
+        for col in required_cols:
+            if col not in df.columns:
+                st.error(f"يجب أن يحتوي الملف على عمود '{col}'")
+                return
+
+        conn = get_conn()
+        cur = conn.cursor()
+        existing_names = {row[0] for row in cur.execute("SELECT name FROM properties").fetchall()}
+        added = 0
+        skipped = 0
+        for _, row in df.iterrows():
+            name = str(row["الاسم"]).strip()
+            if not name:
+                continue
+            if name in existing_names:
+                skipped += 1
+                continue
+            description = str(row.get("الوصف", "")).strip() if "الوصف" in df.columns else ""
+            address = str(row.get("العنوان", "")).strip() if "العنوان" in df.columns else ""
+            region = str(row.get("المنطقة", "")).strip() if "المنطقة" in df.columns else ""
+            area = str(row.get("المساحة", "")).strip() if "المساحة" in df.columns else ""
+            cur.execute('''INSERT INTO properties (name, description, address, region, area) VALUES (?, ?, ?, ?, ?)''', (name, description, address, region, area))
+            added += 1
+        conn.commit()
+        conn.close()
+        st.cache_data.clear()
+        msg = f"تم استيراد {added} عقار جديد"
+        if skipped > 0:
+            msg += f"، وتم تجاهل {skipped} اسم مكرر"
+        st.success(msg)
+    except Exception as e:
+        st.error(f"حدث خطأ أثناء الاستيراد: {str(e)}")
+
 def add_user(username, password, role):
     conn = get_conn()
     cur = conn.cursor()
@@ -1098,6 +1135,14 @@ elif menu == "إدارة البيانات":
         # ----- تبويب المستأجرين -----
         with data_tab1:
             st.subheader("👥 المستأجرين")
+            # إضافة استيراد Excel
+            uploaded_tenants = st.file_uploader("استيراد مستأجرين من Excel", type=["xlsx", "xls"], key="import_tenants")
+            if uploaded_tenants is not None:
+                if st.button("تنفيذ استيراد المستأجرين", key="btn_import_tenants"):
+                    import_tenants_from_excel(uploaded_tenants)
+                    st.rerun()
+            st.markdown("---")
+
             df_tenants = load_tenants()
             if not df_tenants.empty:
                 col_f1, col_f2 = st.columns(2)
@@ -1119,7 +1164,6 @@ elif menu == "إدارة البيانات":
                         cur = conn.cursor()
                         tenant_info = cur.execute("SELECT * FROM tenants WHERE id=?", (tenant_id,)).fetchone()
                         st.markdown(f"**الاسم:** {tenant_info['name']} | **الهاتف:** {tenant_info['phone'] or 'غير محدد'} | **المنطقة:** {tenant_info['region'] or 'غير محدد'}")
-                        # ✅ إصلاح: إزالة c.id من SELECT
                         contracts = cur.execute("""
                             SELECT c.contract_number, p.name, c.start_date, c.end_date, c.status, c.rent_amount, c.interval_months
                             FROM contracts c JOIN properties p ON c.property_id=p.id WHERE c.tenant_id=?
@@ -1180,6 +1224,14 @@ elif menu == "إدارة البيانات":
         # ----- تبويب العقارات -----
         with data_tab2:
             st.subheader("🏬 العقارات")
+            # إضافة استيراد Excel
+            uploaded_properties = st.file_uploader("استيراد عقارات من Excel", type=["xlsx", "xls"], key="import_properties")
+            if uploaded_properties is not None:
+                if st.button("تنفيذ استيراد العقارات", key="btn_import_properties"):
+                    import_properties_from_excel(uploaded_properties)
+                    st.rerun()
+            st.markdown("---")
+
             df_props = load_properties()
             if not df_props.empty:
                 search_prop = st.text_input("بحث", key="prop_search")
@@ -1196,7 +1248,6 @@ elif menu == "إدارة البيانات":
                         cur = conn.cursor()
                         prop_info = cur.execute("SELECT * FROM properties WHERE id=?", (prop_id,)).fetchone()
                         st.markdown(f"**الاسم:** {prop_info['name']} | **المنطقة:** {prop_info['region'] or 'غير محدد'} | **العنوان:** {prop_info['address'] or 'غير محدد'}")
-                        # ✅ إصلاح: إزالة c.id من SELECT
                         contracts = cur.execute("""
                             SELECT c.contract_number, t.name, c.start_date, c.end_date, c.status
                             FROM contracts c JOIN tenants t ON c.tenant_id=t.id WHERE c.property_id=?
@@ -1256,6 +1307,14 @@ elif menu == "إدارة البيانات":
         # ----- تبويب العقود -----
         with data_tab3:
             st.subheader("📄 العقود")
+            # إضافة استيراد Excel
+            uploaded_contracts = st.file_uploader("استيراد عقود من Excel", type=["xlsx", "xls"], key="import_contracts")
+            if uploaded_contracts is not None:
+                if st.button("تنفيذ استيراد العقود", key="btn_import_contracts"):
+                    import_contracts_from_excel(uploaded_contracts)
+                    st.rerun()
+            st.markdown("---")
+
             df_contracts = load_contracts()
             if not df_contracts.empty:
                 col_c1, col_c2 = st.columns(2)
