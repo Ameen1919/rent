@@ -22,7 +22,7 @@ import json
 # ---------- إعداد الصفحة ----------
 st.set_page_config(page_title="نظام إدارة الإيجارات", page_icon="🏢", layout="wide")
 
-# ---------- CSS لضبط الاتجاه RTL بشكل كامل ----------
+# ---------- CSS لضبط الاتجاه RTL ----------
 st.markdown("""
 <style>
     html, body, [class*="css"] {
@@ -36,21 +36,26 @@ st.markdown("""
         direction: rtl !important;
         text-align: right !important;
     }
-    .stDataFrame, .stTable, [data-testid="stDataFrame"], [data-testid="stTable"] {
-        direction: rtl !important;
-        text-align: right !important;
-    }
-    .stDataFrame div, .stTable div, [data-testid="stDataFrame"] div, [data-testid="stTable"] div {
-        text-align: right !important;
-    }
-    [data-testid="stDataFrame"] [role="columnheader"] {
-        text-align: right !important;
+    /* الجداول: عكس اتجاه الأعمدة وجعل النص يمين */
+    [data-testid="stDataFrame"] {
         direction: rtl !important;
     }
-    [data-testid="stDataFrame"] [role="cell"] {
+    [data-testid="stDataFrame"] div {
+        direction: rtl !important;
+    }
+    [data-testid="stDataFrame"] table {
+        direction: rtl !important;
+    }
+    [data-testid="stDataFrame"] th {
         text-align: right !important;
         direction: rtl !important;
     }
+    [data-testid="stDataFrame"] td {
+        text-align: right !important;
+        direction: rtl !important;
+        unicode-bidi: plaintext !important;
+    }
+    /* عناصر أخرى */
     .stButton, .stSelectbox, .stTextInput, .stNumberInput, .stDateInput, .stRadio, .stCheckbox {
         direction: rtl !important;
         text-align: right !important;
@@ -62,15 +67,9 @@ st.markdown("""
     .stTabs [data-baseweb="tab-list"] {
         direction: rtl !important;
     }
-    .stTabs [data-baseweb="tab"] {
-        direction: rtl !important;
-    }
     input, textarea {
         direction: rtl !important;
         text-align: right !important;
-    }
-    [data-baseweb="select"] [data-baseweb="tag"] {
-        direction: rtl !important;
     }
     .stDownloadButton button {
         direction: rtl !important;
@@ -86,17 +85,6 @@ st.markdown("""
     [data-testid="stMetric"] {
         direction: rtl !important;
         text-align: right !important;
-    }
-    [data-testid="stMetricValue"] {
-        direction: rtl !important;
-        text-align: right !important;
-    }
-    [data-testid="stDataFrame"] {
-        direction: rtl !important;
-        unicode-bidi: isolate !important;
-    }
-    [data-testid="stDataFrame"] div[role="cell"] {
-        unicode-bidi: plaintext !important;
     }
 </style>
 """, unsafe_allow_html=True)
@@ -116,6 +104,23 @@ def format_currency(value):
         return f"{int(val):,}"
     else:
         return f"{val:,.2f}"
+
+# ---------- دالة عرض DataFrame مع عكس الأعمدة لـ RTL ----------
+def rtl_dataframe(df, key=None, **kwargs):
+    """عرض DataFrame مع عكس ترتيب الأعمدة ليكون من اليمين لليسار"""
+    df_rtl = df[df.columns[::-1]]  # عكس الأعمدة
+    st.dataframe(df_rtl, use_container_width=True, key=key, **kwargs)
+
+# ---------- تعديل دالة display_dataframe_with_reorder ----------
+def display_dataframe_with_reorder(df, key_prefix):
+    columns = list(df.columns)
+    default = st.session_state.get(f"{key_prefix}_order", columns)
+    selected_cols = st.multiselect("اختر الأعمدة وترتيبها", options=columns, default=default, key=f"{key_prefix}_cols")
+    if selected_cols:
+        df = df[selected_cols]
+        st.session_state[f"{key_prefix}_order"] = selected_cols
+    rtl_dataframe(df, key=f"{key_prefix}_rtl")
+    return df, selected_cols
 
 # ---------- دوال دعم العربية في PDF ----------
 def download_arabic_font():
@@ -728,6 +733,7 @@ current_user_id = user_info['id']
 current_role = user_info['role']
 user_permissions = load_permissions(current_user_id)
 
+# إضافة CSS مخصص بعد تسجيل الدخول
 st.markdown(f"""<style>html,body,[class*="css"]{{direction:rtl;text-align:right;font-size:{font_size}px;}}.stApp{{background-color:{background_color};}}.stSidebar{{background-color:{primary_color};color:white;}}.stSidebar [data-testid="stMarkdown"]{{color:white;}}.stSidebar .stRadio label,.stSidebar .stSelectbox label{{color:white!important;}}.stButton>button{{background-color:{secondary_color};color:white;border-radius:8px;border:none;padding:8px 16px;font-weight:bold;}}.stButton>button:hover{{background-color:{primary_color};color:white;}}h1,h2,h3,h4{{color:{primary_color};}}.stMetric{{background-color:white;padding:15px;border-radius:10px;box-shadow:0 2px 5px rgba(0,0,0,0.1);text-align:center;}}.stDataFrame,.stTable{{background-color:white;border-radius:10px;padding:10px;box-shadow:0 2px 5px rgba(0,0,0,0.1);}}.stApp header{{background-color:{primary_color};color:white;}}</style>""", unsafe_allow_html=True)
 
 if logo_data:
@@ -828,72 +834,6 @@ def hijri_to_gregorian(hijri_str):
     day, month, year = map(int, hijri_str.split('-'))
     greg = convert.Hijri(year, month, day).to_gregorian()
     return date(greg.year, greg.month, greg.day)
-
-def display_dataframe_with_reorder(df, key_prefix):
-    columns = list(df.columns)
-    default = st.session_state.get(f"{key_prefix}_order", columns)
-    selected_cols = st.multiselect("اختر الأعمدة وترتيبها", options=columns, default=default, key=f"{key_prefix}_cols")
-    if selected_cols:
-        df = df[selected_cols]
-        st.session_state[f"{key_prefix}_order"] = selected_cols
-    st.dataframe(df, use_container_width=True)
-    return df, selected_cols
-
-# ---------- دوال إضافية للإضافة ----------
-def add_tenant(name, phone, national_id, address, region, notes):
-    conn = get_conn()
-    cur = conn.cursor()
-    cur.execute('''INSERT INTO tenants (name, phone, national_id, address, region, notes) VALUES (?, ?, ?, ?, ?, ?)''', 
-                (name, phone, national_id, address, region, notes))
-    conn.commit()
-    conn.close()
-    st.cache_data.clear()
-
-def add_property(name, description, address, region, area):
-    conn = get_conn()
-    cur = conn.cursor()
-    cur.execute('''INSERT INTO properties (name, description, address, region, area) VALUES (?, ?, ?, ?, ?)''', 
-                (name, description, address, region, area))
-    conn.commit()
-    conn.close()
-    st.cache_data.clear()
-
-def add_contract(tenant_id, property_id, contract_number, start_date, end_date, rent_amount, interval_months, deposit_amount, tax_included, tax_rate, notes, contract_file_bytes):
-    conn = get_conn()
-    cur = conn.cursor()
-    cur.execute('''INSERT INTO contracts (tenant_id, property_id, contract_number, start_date, end_date, rent_amount, interval_months, deposit_amount, notes, tax_included, tax_rate, contract_file) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)''', 
-                (tenant_id, property_id, contract_number, start_date.isoformat(), end_date.isoformat(), rent_amount, interval_months, deposit_amount, notes, tax_included, tax_rate, contract_file_bytes))
-    contract_id = cur.lastrowid
-    conn.commit()
-    conn.close()
-    # إنشاء جدول الدفعات
-    create_payment_schedule(contract_id, tenant_id, start_date, end_date, rent_amount, interval_months)
-    st.cache_data.clear()
-
-def get_active_tenants():
-    """استعلام عن المستأجرين الذين ليس لديهم عقد نشط حالياً"""
-    conn = get_conn()
-    cur = conn.cursor()
-    cur.execute('''SELECT id, name FROM tenants WHERE id NOT IN (SELECT tenant_id FROM contracts WHERE status='نشط') ORDER BY name''')
-    tenants = cur.fetchall()
-    conn.close()
-    return [(t[0], t[1]) for t in tenants]
-
-def get_all_tenants():
-    conn = get_conn()
-    cur = conn.cursor()
-    cur.execute('SELECT id, name FROM tenants ORDER BY name')
-    tenants = cur.fetchall()
-    conn.close()
-    return [(t[0], t[1]) for t in tenants]
-
-def get_all_properties():
-    conn = get_conn()
-    cur = conn.cursor()
-    cur.execute('SELECT id, name FROM properties ORDER BY name')
-    props = cur.fetchall()
-    conn.close()
-    return [(p[0], p[1]) for p in props]
 
 # ---------- دوال قراءة البيانات ----------
 @st.cache_data(ttl=60)
@@ -1219,56 +1159,59 @@ def update_receipt_amount(receipt_id, new_amount):
     st.cache_data.clear()
     return True, "تم تعديل السند بنجاح"
 
-# ================== دوال القوالب (Templates) ==================
-def download_tenants_template():
-    df = pd.DataFrame(columns=[
-        "الاسم", "الهاتف", "رقم الهوية / الإقامة", "العنوان", "المنطقة", "ملاحظات"
-    ])
-    df.loc[0] = ["مثال: أحمد محمد", "0501234567", "1234567890", "شارع الملك فهد", "الرياض", "مثال"]
-    output = io.BytesIO()
-    with pd.ExcelWriter(output, engine='xlsxwriter') as writer:
-        df.to_excel(writer, index=False, sheet_name='المستأجرين')
-    output.seek(0)
-    st.download_button(
-        label="تحميل قالب استيراد المستأجرين",
-        data=output.getvalue(),
-        file_name="نموذج_استيراد_المستأجرين.xlsx",
-        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-    )
+# ---------- دوال الإضافة ----------
+def add_tenant(name, phone, national_id, address, region, notes):
+    conn = get_conn()
+    cur = conn.cursor()
+    cur.execute('''INSERT INTO tenants (name, phone, national_id, address, region, notes) VALUES (?, ?, ?, ?, ?, ?)''', 
+                (name, phone, national_id, address, region, notes))
+    conn.commit()
+    conn.close()
+    st.cache_data.clear()
 
-def download_contracts_template():
-    df = pd.DataFrame(columns=[
-        "اسم المستأجر", "اسم العقار", "تاريخ البداية", "تاريخ النهاية",
-        "قيمة الإيجار السنوي", "دورية السداد (شهور)", "التأمين",
-        "شامل الضريبة", "نسبة الضريبة", "ملاحظات"
-    ])
-    df.loc[0] = ["أحمد محمد", "عمارة النخبة", "2025-01-01", "2025-12-31", 60000, 6, 5000, 0, 0.15, "مثال"]
-    output = io.BytesIO()
-    with pd.ExcelWriter(output, engine='xlsxwriter') as writer:
-        df.to_excel(writer, index=False, sheet_name='العقود')
-    output.seek(0)
-    st.download_button(
-        label="تحميل قالب استيراد العقود",
-        data=output.getvalue(),
-        file_name="نموذج_استيراد_العقود.xlsx",
-        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-    )
+def add_property(name, description, address, region, area):
+    conn = get_conn()
+    cur = conn.cursor()
+    cur.execute('''INSERT INTO properties (name, description, address, region, area) VALUES (?, ?, ?, ?, ?)''', 
+                (name, description, address, region, area))
+    conn.commit()
+    conn.close()
+    st.cache_data.clear()
 
-def download_properties_template():
-    df = pd.DataFrame(columns=[
-        "الاسم", "الوصف", "العنوان", "المنطقة", "المساحة"
-    ])
-    df.loc[0] = ["عمارة النخبة", "عمارة سكنية 4 شقق", "حي الروضة", "جدة", "500 م²"]
-    output = io.BytesIO()
-    with pd.ExcelWriter(output, engine='xlsxwriter') as writer:
-        df.to_excel(writer, index=False, sheet_name='العقارات')
-    output.seek(0)
-    st.download_button(
-        label="تحميل قالب استيراد العقارات",
-        data=output.getvalue(),
-        file_name="نموذج_استيراد_العقارات.xlsx",
-        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-    )
+def add_contract(tenant_id, property_id, contract_number, start_date, end_date, rent_amount, interval_months, deposit_amount, tax_included, tax_rate, notes, contract_file_bytes):
+    conn = get_conn()
+    cur = conn.cursor()
+    cur.execute('''INSERT INTO contracts (tenant_id, property_id, contract_number, start_date, end_date, rent_amount, interval_months, deposit_amount, notes, tax_included, tax_rate, contract_file) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)''', 
+                (tenant_id, property_id, contract_number, start_date.isoformat(), end_date.isoformat(), rent_amount, interval_months, deposit_amount, notes, tax_included, tax_rate, contract_file_bytes))
+    contract_id = cur.lastrowid
+    conn.commit()
+    conn.close()
+    create_payment_schedule(contract_id, tenant_id, start_date, end_date, rent_amount, interval_months)
+    st.cache_data.clear()
+
+def get_active_tenants():
+    conn = get_conn()
+    cur = conn.cursor()
+    cur.execute('''SELECT id, name FROM tenants WHERE id NOT IN (SELECT tenant_id FROM contracts WHERE status='نشط') ORDER BY name''')
+    tenants = cur.fetchall()
+    conn.close()
+    return [(t[0], t[1]) for t in tenants]
+
+def get_all_tenants():
+    conn = get_conn()
+    cur = conn.cursor()
+    cur.execute('SELECT id, name FROM tenants ORDER BY name')
+    tenants = cur.fetchall()
+    conn.close()
+    return [(t[0], t[1]) for t in tenants]
+
+def get_all_properties():
+    conn = get_conn()
+    cur = conn.cursor()
+    cur.execute('SELECT id, name FROM properties ORDER BY name')
+    props = cur.fetchall()
+    conn.close()
+    return [(p[0], p[1]) for p in props]
 
 # ================== لوحة التحكم ==================
 if menu == "لوحة التحكم" and has_permission(current_user_id, "لوحة التحكم"):
@@ -1315,7 +1258,7 @@ if menu == "لوحة التحكم" and has_permission(current_user_id, "لوحة
     ]
     if not upcoming.empty:
         upcoming_display = upcoming[["المستأجر", "العقار", "تاريخ الاستحقاق", "المبلغ", "المدفوع", "الحالة"]]
-        display_dataframe_with_reorder(upcoming_display, "upcoming")
+        rtl_dataframe(upcoming_display)
     else:
         st.info("لا توجد دفعات مستحقة خلال 30 يوم.")
 
@@ -1340,7 +1283,6 @@ elif menu == "إدارة البيانات":
                         import_tenants_from_excel(uploaded_tenants)
                         st.rerun()
 
-            # زر إضافة مستأجر جديد
             if st.button("➕ إضافة مستأجر جديد", key="add_tenant_btn"):
                 st.session_state['show_add_tenant'] = True
 
@@ -1386,7 +1328,7 @@ elif menu == "إدارة البيانات":
                     mask = filtered.apply(lambda row: search_term.lower() in str(row.values).lower(), axis=1)
                     filtered = filtered[mask]
                 if not filtered.empty:
-                    st.dataframe(filtered, use_container_width=True)
+                    rtl_dataframe(filtered, key="tenants_df")
                     tenant_id = st.selectbox("اختر مستأجر", filtered["الرقم"], format_func=lambda x: filtered[filtered["الرقم"]==x]["الاسم"].iloc[0])
                     if tenant_id:
                         conn = get_conn()
@@ -1401,7 +1343,7 @@ elif menu == "إدارة البيانات":
                         if contracts:
                             st.markdown("**العقود المرتبطة:**")
                             df_contracts_tenant = pd.DataFrame(contracts, columns=["رقم العقد", "العقار", "بداية", "نهاية", "الحالة", "إيجار سنوي", "دورية"])
-                            st.dataframe(df_contracts_tenant, use_container_width=True)
+                            rtl_dataframe(df_contracts_tenant)
                         else:
                             st.info("لا توجد عقود لهذا المستأجر")
                         if current_role == 'مدير':
@@ -1463,7 +1405,6 @@ elif menu == "إدارة البيانات":
                         import_properties_from_excel(uploaded_properties)
                         st.rerun()
 
-            # زر إضافة عقار جديد
             if st.button("➕ إضافة عقار جديد", key="add_property_btn"):
                 st.session_state['show_add_property'] = True
 
@@ -1503,7 +1444,7 @@ elif menu == "إدارة البيانات":
                 else:
                     filtered_props = df_props
                 if not filtered_props.empty:
-                    st.dataframe(filtered_props, use_container_width=True)
+                    rtl_dataframe(filtered_props, key="props_df")
                     prop_id = st.selectbox("اختر عقار", filtered_props["الرقم"], format_func=lambda x: filtered_props[filtered_props["الرقم"]==x]["الاسم"].iloc[0])
                     if prop_id:
                         conn = get_conn()
@@ -1518,7 +1459,7 @@ elif menu == "إدارة البيانات":
                         if contracts:
                             st.markdown("**العقود المرتبطة:**")
                             df_contracts_prop = pd.DataFrame(contracts, columns=["رقم العقد", "المستأجر", "بداية", "نهاية", "الحالة"])
-                            st.dataframe(df_contracts_prop, use_container_width=True)
+                            rtl_dataframe(df_contracts_prop)
                         else:
                             st.info("لا توجد عقود لهذا العقار")
                         if current_role == 'مدير':
@@ -1579,14 +1520,12 @@ elif menu == "إدارة البيانات":
                         import_contracts_from_excel(uploaded_contracts)
                         st.rerun()
 
-            # زر إضافة عقد جديد
             if st.button("➕ إضافة عقد جديد", key="add_contract_btn"):
                 st.session_state['show_add_contract'] = True
 
             if st.session_state.get('show_add_contract', False):
                 with st.form("add_contract_form"):
                     st.markdown("### إضافة عقد جديد")
-                    # اختيار مستأجر نشط (بدون عقد نشط)
                     active_tenants = get_active_tenants()
                     if not active_tenants:
                         st.warning("لا يوجد مستأجرين متاحين (جميعهم لديهم عقود نشطة). أضف مستأجرًا جديدًا أولاً.")
@@ -1600,7 +1539,6 @@ elif menu == "إدارة البيانات":
                         else:
                             property_id = st.selectbox("اختر العقار *", options=list(property_options.keys()), format_func=lambda x: property_options[x])
                             
-                            # بيانات العقد
                             start_date = st.date_input("تاريخ البداية *", value=date.today())
                             end_date = st.date_input("تاريخ النهاية *", value=date.today() + relativedelta(years=1))
                             rent_amount = st.number_input("قيمة الإيجار السنوي *", min_value=0.0, step=1000.0, value=0.0)
@@ -1623,7 +1561,6 @@ elif menu == "إدارة البيانات":
                                 elif start_date >= end_date:
                                     st.error("تاريخ النهاية يجب أن يكون بعد تاريخ البداية")
                                 else:
-                                    # توليد رقم عقد فريد
                                     contract_number = generate_contract_number()
                                     file_bytes = contract_file.read() if contract_file else None
                                     add_contract(tenant_id, property_id, contract_number, start_date, end_date, rent_amount, interval_months, deposit_amount, 1 if tax_included else 0, tax_rate, notes, file_bytes)
@@ -1650,7 +1587,7 @@ elif menu == "إدارة البيانات":
                 if tenant_filter_c != "الكل":
                     filtered_c = filtered_c[filtered_c["اسم المستأجر"] == tenant_filter_c]
                 if not filtered_c.empty:
-                    st.dataframe(filtered_c, use_container_width=True)
+                    rtl_dataframe(filtered_c, key="contracts_df")
                     contract_id = st.selectbox("اختر عقد", filtered_c["الرقم"], format_func=lambda x: filtered_c[filtered_c["الرقم"]==x]["رقم العقد"].iloc[0])
                     if contract_id:
                         conn = get_conn()
@@ -1777,7 +1714,7 @@ elif menu == "الدفعات":
                 else:
                     filtered_payments = df_payments
                 if not filtered_payments.empty:
-                    display_dataframe_with_reorder(filtered_payments.drop(columns=["المرفق"]), "payments_filtered")
+                    rtl_dataframe(filtered_payments.drop(columns=["المرفق"]), key="payments_df")
                     col_exp1, col_exp2 = st.columns(2)
                     with col_exp1:
                         output = io.BytesIO()
@@ -1842,7 +1779,7 @@ elif menu == "سندات القبض":
                         df_dues["المبلغ"] = df_dues["المبلغ"].apply(format_currency)
                         df_dues["المدفوع"] = df_dues["المدفوع"].apply(format_currency)
                         df_dues["المتبقي"] = df_dues["المتبقي"].apply(format_currency)
-                        st.dataframe(df_dues, use_container_width=True)
+                        rtl_dataframe(df_dues, key="dues_df")
                         payment_ids = df_dues["رقم الدفعة"].tolist()
                         payment_id = st.selectbox("اختر الدفعة", payment_ids, format_func=lambda x: f"دفعة رقم {x}")
                         if payment_id:
@@ -1878,7 +1815,7 @@ elif menu == "سندات القبض":
         with tab2:
             df_receipts = load_receipts()
             if not df_receipts.empty:
-                display_dataframe_with_reorder(df_receipts.drop(columns=["المرفق"]), "receipts")
+                rtl_dataframe(df_receipts.drop(columns=["المرفق"]), key="receipts_df")
                 receipt_id = st.selectbox("اختر سند", df_receipts["الرقم"], format_func=lambda x: f"{df_receipts[df_receipts['الرقم']==x]['رقم السند'].iloc[0]}")
                 if receipt_id:
                     col1, col2, col3 = st.columns(3)
@@ -1989,13 +1926,8 @@ elif menu == "التقارير":
                         st.write(f"**الفترة:** من {from_date} إلى {to_date} م")
 
                     if payments:
-                        for pay in payments:
-                            pay_id, due, amount, paid, remaining, status, paid_date, attachment = pay
-                            with st.expander(f"📅 تاريخ الاستحقاق: {due} | المبلغ: {format_currency(amount)} | المدفوع: {format_currency(paid)} | المتبقي: {format_currency(remaining)} | الحالة: {status}"):
-                                if paid > 0 and attachment is not None:
-                                    st.download_button(label="تحميل مرفق السداد", data=attachment, file_name=f"payment_{pay_id}_attachment.pdf", mime="application/octet-stream")
-                                else:
-                                    st.write("لا يوجد مرفق لهذه الدفعة.")
+                        df_payments_report = pd.DataFrame(payments, columns=["رقم الدفعة", "تاريخ الاستحقاق", "المبلغ", "المدفوع", "المتبقي", "الحالة", "تاريخ السداد", "المرفق"])
+                        rtl_dataframe(df_payments_report.drop(columns=["المرفق"]), key="report_payments_df")
                         total_amount = sum(p[2] for p in payments)
                         total_paid = sum(p[3] for p in payments)
                         st.write(f"**إجمالي المستحق:** {format_currency(total_amount)}")
@@ -2006,13 +1938,8 @@ elif menu == "التقارير":
 
                     st.markdown("### سندات القبض")
                     if receipts:
-                        for rec in receipts:
-                            receipt_no, amount, rec_date, method, attachment = rec
-                            with st.expander(f"🧾 سند: {receipt_no} | المبلغ: {format_currency(amount)} | التاريخ: {rec_date} | الطريقة: {method}"):
-                                if attachment is not None:
-                                    st.download_button(label="تحميل المرفق", data=attachment, file_name=f"receipt_{receipt_no}_attachment.pdf", mime="application/octet-stream")
-                                else:
-                                    st.write("لا يوجد مرفق.")
+                        df_receipts_report = pd.DataFrame(receipts, columns=["رقم السند", "المبلغ", "التاريخ", "الطريقة", "المرفق"])
+                        rtl_dataframe(df_receipts_report.drop(columns=["المرفق"]), key="report_receipts_df")
                     else:
                         st.info("لا توجد سندات في هذه الفترة")
 
@@ -2069,7 +1996,7 @@ elif menu == "التقارير":
 
             if dues:
                 df = pd.DataFrame(dues, columns=["المستأجر", "العقار", "تاريخ الاستحقاق", "المبلغ", "المدفوع", "المتبقي", "الحالة", "المنطقة"])
-                display_dataframe_with_reorder(df.copy(), "report_due")
+                rtl_dataframe(df, key="due_report_df")
                 total_amount = sum(d[3] for d in dues)
                 total_paid = sum(d[4] for d in dues)
                 st.write(f"**إجمالي المستحق:** {format_currency(total_amount)}")
@@ -2108,7 +2035,7 @@ elif menu == "التقارير":
             df = pd.read_sql_query(query, conn, params=(from_date.isoformat(), to_date.isoformat()))
             conn.close()
             if not df.empty:
-                display_dataframe_with_reorder(df.copy(), "report_revenue")
+                rtl_dataframe(df, key="revenue_report_df")
                 total = df["المبلغ"].sum()
                 st.write(f"**إجمالي الإيرادات:** {format_currency(total)}")
                 output = io.BytesIO()
@@ -2160,7 +2087,7 @@ elif menu == "التقارير":
                 df['مبلغ الضريبة'] = tax_values
                 df['المبلغ غير شامل الضريبة'] = df['المبلغ شامل الضريبة'] - df['مبلغ الضريبة']
                 df = df[['اسم المستأجر', 'رقم العقد', 'بداية الفترة', 'نهاية الفترة', 'المبلغ شامل الضريبة', 'نسبة الضريبة', 'مبلغ الضريبة', 'المبلغ غير شامل الضريبة', 'طريقة الدفع']]
-                df_display, selected_cols = display_dataframe_with_reorder(df.copy(), "report_tax")
+                rtl_dataframe(df, key="tax_report_df")
                 total_amount = df['المبلغ شامل الضريبة'].sum()
                 total_tax = df['مبلغ الضريبة'].sum()
                 total_net = df['المبلغ غير شامل الضريبة'].sum()
@@ -2169,9 +2096,9 @@ elif menu == "التقارير":
                 st.write(f"**إجمالي المبلغ غير شامل الضريبة:** {format_currency(total_net)}")
                 output = io.BytesIO()
                 with pd.ExcelWriter(output, engine='xlsxwriter') as writer:
-                    df_display.to_excel(writer, index=False)
+                    df.to_excel(writer, index=False)
                 st.download_button("تحميل Excel", data=output.getvalue(), file_name=f"ضرائب_{from_date}_to_{to_date}.xlsx")
-                export_tax_pdf(df_display, "تقرير الضرائب", f"ضرائب_{from_date}_to_{to_date}.pdf", columns_order=selected_cols)
+                export_tax_pdf(df, "تقرير الضرائب", f"ضرائب_{from_date}_to_{to_date}.pdf", columns_order=selected_cols)
             else:
                 st.info("لا توجد دفعات مدفوعة بالكامل في هذه الفترة")
 
@@ -2185,7 +2112,7 @@ elif menu == "المستخدمون":
         with tab1:
             df_users = load_users()
             if not df_users.empty:
-                st.dataframe(df_users, use_container_width=True)
+                rtl_dataframe(df_users, key="users_df")
                 user_id = st.selectbox("اختر مستخدم لتعديل صلاحياته", df_users["الرقم"], format_func=lambda x: df_users[df_users["الرقم"]==x]["اسم المستخدم"].iloc[0])
                 if user_id:
                     user_perms = load_permissions(user_id)
