@@ -26,6 +26,8 @@ st.set_page_config(page_title="نظام إدارة الإيجارات", page_ico
 def safe_float(value, default=0.0):
     """تحويل آمن إلى float مع إرجاع default عند الفشل"""
     try:
+        if value is None or pd.isna(value):
+            return default
         return float(value)
     except (TypeError, ValueError):
         return default
@@ -194,10 +196,10 @@ def export_df_to_pdf(df, title, file_name, columns_order=None, extra_info=None):
             x_right = x_cursor
             x_left = x_cursor - col_w
             value = row[col]
-            if isinstance(value, (int, float)):
+            if isinstance(value, (int, float)) and not pd.isna(value):
                 value_str = format_currency(value)
             else:
-                value_str = str(value)
+                value_str = str(value) if not pd.isna(value) else ""
             c.drawRightString(x_right - 5, y, reshape_arabic_text(value_str))
             x_cursor -= col_w
         c.setStrokeColor(colors.grey)
@@ -341,10 +343,10 @@ def export_tax_pdf(df, title, file_name, columns_order=None):
             x_right = x_cursor
             x_left = x_cursor - col_w
             value = row[col]
-            if isinstance(value, (int, float)):
+            if isinstance(value, (int, float)) and not pd.isna(value):
                 value_str = format_currency(value)
             else:
-                value_str = str(value)
+                value_str = str(value) if not pd.isna(value) else ""
             c.drawRightString(x_right - 5, y, reshape_arabic_text(value_str))
             x_cursor -= col_w
         c.setStrokeColor(colors.grey)
@@ -1587,7 +1589,6 @@ elif menu == "سندات القبض":
                         st.info("لا توجد دفعات مستحقة")
                     else:
                         df_dues = pd.DataFrame(dues, columns=["رقم الدفعة", "تاريخ الاستحقاق", "المبلغ", "المدفوع", "المتبقي"])
-                        # عرض المبالغ بتنسيق بدون أصفار زائدة
                         df_dues["المبلغ"] = df_dues["المبلغ"].apply(format_currency)
                         df_dues["المدفوع"] = df_dues["المدفوع"].apply(format_currency)
                         df_dues["المتبقي"] = df_dues["المتبقي"].apply(format_currency)
@@ -1595,9 +1596,8 @@ elif menu == "سندات القبض":
                         payment_ids = df_dues["رقم الدفعة"].tolist()
                         payment_id = st.selectbox("اختر الدفعة", payment_ids, format_func=lambda x: f"دفعة رقم {x}")
                         if payment_id:
-                            # الحصول على المتبقي من البيانات الأصلية
                             original_due = [d for d in dues if d[0] == payment_id][0]
-                            remaining_amount = original_due[4]  # المتبقي الأصلي كرقم
+                            remaining_amount = original_due[4]
                             payment_date = st.date_input("تاريخ السداد", value=today)
                             amount = st.number_input("المبلغ", min_value=0.0, max_value=float(remaining_amount), value=float(remaining_amount), step=100.0)
                             method = st.selectbox("طريقة الدفع", ["نقدي", "تحويل بنكي", "شيك", "دفع في المنصة"])
