@@ -22,9 +22,87 @@ import json
 # ---------- إعداد الصفحة ----------
 st.set_page_config(page_title="نظام إدارة الإيجارات", page_icon="🏢", layout="wide")
 
+# ---------- CSS لضبط الاتجاه RTL بشكل كامل ----------
+st.markdown("""
+<style>
+    html, body, [class*="css"] {
+        direction: rtl !important;
+        text-align: right !important;
+    }
+    .stApp {
+        direction: rtl !important;
+    }
+    .stSidebar {
+        direction: rtl !important;
+        text-align: right !important;
+    }
+    .stDataFrame, .stTable, [data-testid="stDataFrame"], [data-testid="stTable"] {
+        direction: rtl !important;
+        text-align: right !important;
+    }
+    .stDataFrame div, .stTable div, [data-testid="stDataFrame"] div, [data-testid="stTable"] div {
+        text-align: right !important;
+    }
+    [data-testid="stDataFrame"] [role="columnheader"] {
+        text-align: right !important;
+        direction: rtl !important;
+    }
+    [data-testid="stDataFrame"] [role="cell"] {
+        text-align: right !important;
+        direction: rtl !important;
+    }
+    .stButton, .stSelectbox, .stTextInput, .stNumberInput, .stDateInput, .stRadio, .stCheckbox {
+        direction: rtl !important;
+        text-align: right !important;
+    }
+    h1, h2, h3, h4, h5, h6 {
+        direction: rtl !important;
+        text-align: right !important;
+    }
+    .stTabs [data-baseweb="tab-list"] {
+        direction: rtl !important;
+    }
+    .stTabs [data-baseweb="tab"] {
+        direction: rtl !important;
+    }
+    input, textarea {
+        direction: rtl !important;
+        text-align: right !important;
+    }
+    [data-baseweb="select"] [data-baseweb="tag"] {
+        direction: rtl !important;
+    }
+    .stDownloadButton button {
+        direction: rtl !important;
+    }
+    .streamlit-expanderHeader {
+        direction: rtl !important;
+        text-align: right !important;
+    }
+    .stAlert {
+        direction: rtl !important;
+        text-align: right !important;
+    }
+    [data-testid="stMetric"] {
+        direction: rtl !important;
+        text-align: right !important;
+    }
+    [data-testid="stMetricValue"] {
+        direction: rtl !important;
+        text-align: right !important;
+    }
+    [data-testid="stDataFrame"] {
+        direction: rtl !important;
+        unicode-bidi: isolate !important;
+    }
+    [data-testid="stDataFrame"] div[role="cell"] {
+        unicode-bidi: plaintext !important;
+    }
+</style>
+""", unsafe_allow_html=True)
+
 # ---------- دوال مساعدة آمنة ----------
 def safe_float(value, default=0.0):
-    """تحويل آمن إلى float مع إرجاع default عند الفشل"""
     try:
         if value is None or pd.isna(value):
             return default
@@ -33,7 +111,6 @@ def safe_float(value, default=0.0):
         return default
 
 def format_currency(value):
-    """تنسيق العملة بشكل آمن مع إزالة الأصفار الزائدة"""
     val = safe_float(value, 0.0)
     if val == int(val):
         return f"{int(val):,}"
@@ -762,6 +839,62 @@ def display_dataframe_with_reorder(df, key_prefix):
     st.dataframe(df, use_container_width=True)
     return df, selected_cols
 
+# ---------- دوال إضافية للإضافة ----------
+def add_tenant(name, phone, national_id, address, region, notes):
+    conn = get_conn()
+    cur = conn.cursor()
+    cur.execute('''INSERT INTO tenants (name, phone, national_id, address, region, notes) VALUES (?, ?, ?, ?, ?, ?)''', 
+                (name, phone, national_id, address, region, notes))
+    conn.commit()
+    conn.close()
+    st.cache_data.clear()
+
+def add_property(name, description, address, region, area):
+    conn = get_conn()
+    cur = conn.cursor()
+    cur.execute('''INSERT INTO properties (name, description, address, region, area) VALUES (?, ?, ?, ?, ?)''', 
+                (name, description, address, region, area))
+    conn.commit()
+    conn.close()
+    st.cache_data.clear()
+
+def add_contract(tenant_id, property_id, contract_number, start_date, end_date, rent_amount, interval_months, deposit_amount, tax_included, tax_rate, notes, contract_file_bytes):
+    conn = get_conn()
+    cur = conn.cursor()
+    cur.execute('''INSERT INTO contracts (tenant_id, property_id, contract_number, start_date, end_date, rent_amount, interval_months, deposit_amount, notes, tax_included, tax_rate, contract_file) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)''', 
+                (tenant_id, property_id, contract_number, start_date.isoformat(), end_date.isoformat(), rent_amount, interval_months, deposit_amount, notes, tax_included, tax_rate, contract_file_bytes))
+    contract_id = cur.lastrowid
+    conn.commit()
+    conn.close()
+    # إنشاء جدول الدفعات
+    create_payment_schedule(contract_id, tenant_id, start_date, end_date, rent_amount, interval_months)
+    st.cache_data.clear()
+
+def get_active_tenants():
+    """استعلام عن المستأجرين الذين ليس لديهم عقد نشط حالياً"""
+    conn = get_conn()
+    cur = conn.cursor()
+    cur.execute('''SELECT id, name FROM tenants WHERE id NOT IN (SELECT tenant_id FROM contracts WHERE status='نشط') ORDER BY name''')
+    tenants = cur.fetchall()
+    conn.close()
+    return [(t[0], t[1]) for t in tenants]
+
+def get_all_tenants():
+    conn = get_conn()
+    cur = conn.cursor()
+    cur.execute('SELECT id, name FROM tenants ORDER BY name')
+    tenants = cur.fetchall()
+    conn.close()
+    return [(t[0], t[1]) for t in tenants]
+
+def get_all_properties():
+    conn = get_conn()
+    cur = conn.cursor()
+    cur.execute('SELECT id, name FROM properties ORDER BY name')
+    props = cur.fetchall()
+    conn.close()
+    return [(p[0], p[1]) for p in props]
+
 # ---------- دوال قراءة البيانات ----------
 @st.cache_data(ttl=60)
 def load_tenants():
@@ -1206,6 +1339,37 @@ elif menu == "إدارة البيانات":
                     if st.button("تنفيذ الاستيراد", key="btn_import_tenants"):
                         import_tenants_from_excel(uploaded_tenants)
                         st.rerun()
+
+            # زر إضافة مستأجر جديد
+            if st.button("➕ إضافة مستأجر جديد", key="add_tenant_btn"):
+                st.session_state['show_add_tenant'] = True
+
+            if st.session_state.get('show_add_tenant', False):
+                with st.form("add_tenant_form"):
+                    st.markdown("### إضافة مستأجر جديد")
+                    new_name = st.text_input("الاسم *")
+                    new_phone = st.text_input("الهاتف")
+                    new_national_id = st.text_input("رقم الهوية / الإقامة")
+                    new_address = st.text_input("العنوان")
+                    new_region = st.text_input("المنطقة")
+                    new_notes = st.text_area("ملاحظات")
+                    col_submit, col_cancel = st.columns(2)
+                    with col_submit:
+                        submitted = st.form_submit_button("حفظ")
+                    with col_cancel:
+                        cancelled = st.form_submit_button("إلغاء")
+                    if submitted:
+                        if new_name.strip():
+                            add_tenant(new_name.strip(), new_phone.strip(), new_national_id.strip(), new_address.strip(), new_region.strip(), new_notes.strip())
+                            st.success("تمت إضافة المستأجر بنجاح")
+                            st.session_state['show_add_tenant'] = False
+                            st.rerun()
+                        else:
+                            st.error("الاسم مطلوب")
+                    if cancelled:
+                        st.session_state['show_add_tenant'] = False
+                        st.rerun()
+
             st.markdown("---")
 
             df_tenants = load_tenants()
@@ -1298,6 +1462,36 @@ elif menu == "إدارة البيانات":
                     if st.button("تنفيذ الاستيراد", key="btn_import_properties"):
                         import_properties_from_excel(uploaded_properties)
                         st.rerun()
+
+            # زر إضافة عقار جديد
+            if st.button("➕ إضافة عقار جديد", key="add_property_btn"):
+                st.session_state['show_add_property'] = True
+
+            if st.session_state.get('show_add_property', False):
+                with st.form("add_property_form"):
+                    st.markdown("### إضافة عقار جديد")
+                    new_name = st.text_input("الاسم *")
+                    new_description = st.text_area("الوصف")
+                    new_address = st.text_input("العنوان")
+                    new_region = st.text_input("المنطقة")
+                    new_area = st.text_input("المساحة")
+                    col_submit, col_cancel = st.columns(2)
+                    with col_submit:
+                        submitted = st.form_submit_button("حفظ")
+                    with col_cancel:
+                        cancelled = st.form_submit_button("إلغاء")
+                    if submitted:
+                        if new_name.strip():
+                            add_property(new_name.strip(), new_description.strip(), new_address.strip(), new_region.strip(), new_area.strip())
+                            st.success("تمت إضافة العقار بنجاح")
+                            st.session_state['show_add_property'] = False
+                            st.rerun()
+                        else:
+                            st.error("الاسم مطلوب")
+                    if cancelled:
+                        st.session_state['show_add_property'] = False
+                        st.rerun()
+
             st.markdown("---")
 
             df_props = load_properties()
@@ -1384,6 +1578,62 @@ elif menu == "إدارة البيانات":
                     if st.button("تنفيذ الاستيراد", key="btn_import_contracts"):
                         import_contracts_from_excel(uploaded_contracts)
                         st.rerun()
+
+            # زر إضافة عقد جديد
+            if st.button("➕ إضافة عقد جديد", key="add_contract_btn"):
+                st.session_state['show_add_contract'] = True
+
+            if st.session_state.get('show_add_contract', False):
+                with st.form("add_contract_form"):
+                    st.markdown("### إضافة عقد جديد")
+                    # اختيار مستأجر نشط (بدون عقد نشط)
+                    active_tenants = get_active_tenants()
+                    if not active_tenants:
+                        st.warning("لا يوجد مستأجرين متاحين (جميعهم لديهم عقود نشطة). أضف مستأجرًا جديدًا أولاً.")
+                    else:
+                        tenant_options = {t[0]: t[1] for t in active_tenants}
+                        tenant_id = st.selectbox("اختر المستأجر *", options=list(tenant_options.keys()), format_func=lambda x: tenant_options[x])
+                        
+                        property_options = {p[0]: p[1] for p in get_all_properties()}
+                        if not property_options:
+                            st.warning("لا توجد عقارات. أضف عقارًا أولاً.")
+                        else:
+                            property_id = st.selectbox("اختر العقار *", options=list(property_options.keys()), format_func=lambda x: property_options[x])
+                            
+                            # بيانات العقد
+                            start_date = st.date_input("تاريخ البداية *", value=date.today())
+                            end_date = st.date_input("تاريخ النهاية *", value=date.today() + relativedelta(years=1))
+                            rent_amount = st.number_input("قيمة الإيجار السنوي *", min_value=0.0, step=1000.0, value=0.0)
+                            interval_months = st.number_input("دورية السداد (شهور)", min_value=1, value=1)
+                            deposit_amount = st.number_input("التأمين", min_value=0.0, step=100.0, value=0.0)
+                            tax_included = st.checkbox("المبلغ شامل الضريبة", value=False)
+                            tax_rate = st.number_input("نسبة الضريبة (%)", min_value=0.0, max_value=100.0, value=15.0, step=1.0) / 100
+                            notes = st.text_area("ملاحظات")
+                            contract_file = st.file_uploader("ملف العقد (PDF)", type=["pdf"])
+                            
+                            col_submit, col_cancel = st.columns(2)
+                            with col_submit:
+                                submitted = st.form_submit_button("حفظ العقد")
+                            with col_cancel:
+                                cancelled = st.form_submit_button("إلغاء")
+                            
+                            if submitted:
+                                if not property_options:
+                                    st.error("يجب إضافة عقار أولاً")
+                                elif start_date >= end_date:
+                                    st.error("تاريخ النهاية يجب أن يكون بعد تاريخ البداية")
+                                else:
+                                    # توليد رقم عقد فريد
+                                    contract_number = generate_contract_number()
+                                    file_bytes = contract_file.read() if contract_file else None
+                                    add_contract(tenant_id, property_id, contract_number, start_date, end_date, rent_amount, interval_months, deposit_amount, 1 if tax_included else 0, tax_rate, notes, file_bytes)
+                                    st.success(f"تم إنشاء العقد بنجاح برقم {contract_number}")
+                                    st.session_state['show_add_contract'] = False
+                                    st.rerun()
+                            if cancelled:
+                                st.session_state['show_add_contract'] = False
+                                st.rerun()
+
             st.markdown("---")
 
             df_contracts = load_contracts()
