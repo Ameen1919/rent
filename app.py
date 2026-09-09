@@ -18,11 +18,12 @@ from reportlab.pdfbase.ttfonts import TTFont
 import base64
 import hashlib
 import json
+import numpy as np
 
 # ---------- إعداد الصفحة ----------
 st.set_page_config(page_title="نظام إدارة الإيجارات", page_icon="🏢", layout="wide")
 
-# ---------- CSS لضبط الاتجاه RTL ----------
+# ---------- CSS لضبط الاتجاه العام (بدون فرض RTL على الجداول) ----------
 st.markdown("""
 <style>
     html, body, [class*="css"] {
@@ -36,26 +37,7 @@ st.markdown("""
         direction: rtl !important;
         text-align: right !important;
     }
-    /* الجداول: عكس اتجاه الأعمدة وجعل النص يمين */
-    [data-testid="stDataFrame"] {
-        direction: rtl !important;
-    }
-    [data-testid="stDataFrame"] div {
-        direction: rtl !important;
-    }
-    [data-testid="stDataFrame"] table {
-        direction: rtl !important;
-    }
-    [data-testid="stDataFrame"] th {
-        text-align: right !important;
-        direction: rtl !important;
-    }
-    [data-testid="stDataFrame"] td {
-        text-align: right !important;
-        direction: rtl !important;
-        unicode-bidi: plaintext !important;
-    }
-    /* عناصر أخرى */
+    /* عناصر الإدخال والأزرار */
     .stButton, .stSelectbox, .stTextInput, .stNumberInput, .stDateInput, .stRadio, .stCheckbox {
         direction: rtl !important;
         text-align: right !important;
@@ -86,6 +68,13 @@ st.markdown("""
         direction: rtl !important;
         text-align: right !important;
     }
+    /* الجداول: نترك الاتجاه الافتراضي LTR للأعمدة، لكن نضبط محاذاة الخلايا حسب التنسيق */
+    [data-testid="stDataFrame"] {
+        direction: ltr !important;
+    }
+    [data-testid="stDataFrame"] [role="columnheader"] {
+        text-align: center !important;
+    }
 </style>
 """, unsafe_allow_html=True)
 
@@ -105,11 +94,27 @@ def format_currency(value):
     else:
         return f"{val:,.2f}"
 
-# ---------- دالة عرض DataFrame مع عكس الأعمدة لـ RTL ----------
+# ---------- دالة عرض DataFrame مع ضبط اتجاه الخلايا حسب نوع العمود ----------
 def rtl_dataframe(df, key=None, **kwargs):
-    """عرض DataFrame مع عكس ترتيب الأعمدة ليكون من اليمين لليسار"""
-    df_rtl = df[df.columns[::-1]]  # عكس الأعمدة
-    st.dataframe(df_rtl, use_container_width=True, key=key, **kwargs)
+    """
+    تعرض DataFrame مع محاذاة النصوص لليمين والأرقام والتواريخ لليسار.
+    """
+    df_display = df.copy()
+    
+    numeric_cols = df_display.select_dtypes(include=[np.number]).columns.tolist()
+    date_cols = [col for col in df_display.columns if 'تاريخ' in col or 'date' in col.lower() or 'بداية' in col or 'نهاية' in col]
+    number_like_cols = [col for col in df_display.columns if any(kw in col for kw in ['المبلغ', 'المدفوع', 'المتبقي', 'الضريبة', 'إيجار', 'التأمين', 'الرقم', 'نسبة'])]
+    
+    ltr_cols = list(set(numeric_cols + date_cols + number_like_cols))
+    rtl_cols = [col for col in df_display.columns if col not in ltr_cols]
+    
+    styled = df_display.style
+    if ltr_cols:
+        styled = styled.set_properties(subset=ltr_cols, **{'text-align': 'left', 'direction': 'ltr'})
+    if rtl_cols:
+        styled = styled.set_properties(subset=rtl_cols, **{'text-align': 'right', 'direction': 'rtl'})
+    
+    st.dataframe(styled, use_container_width=True, key=key, **kwargs)
 
 # ---------- تعديل دالة display_dataframe_with_reorder ----------
 def display_dataframe_with_reorder(df, key_prefix):
@@ -2137,7 +2142,6 @@ elif menu == "التقارير":
                 df['مبلغ الضريبة'] = tax_values
                 df['المبلغ غير شامل الضريبة'] = df['المبلغ شامل الضريبة'] - df['مبلغ الضريبة']
                 df = df[['اسم المستأجر', 'رقم العقد', 'بداية الفترة', 'نهاية الفترة', 'المبلغ شامل الضريبة', 'نسبة الضريبة', 'مبلغ الضريبة', 'المبلغ غير شامل الضريبة', 'طريقة الدفع']]
-                # استخدام display_dataframe_with_reorder للحصول على selected_cols
                 df_display, selected_cols = display_dataframe_with_reorder(df.copy(), "report_tax")
                 total_amount = df['المبلغ شامل الضريبة'].sum()
                 total_tax = df['مبلغ الضريبة'].sum()
