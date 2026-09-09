@@ -22,6 +22,19 @@ import json
 # ---------- إعداد الصفحة ----------
 st.set_page_config(page_title="نظام إدارة الإيجارات", page_icon="🏢", layout="wide")
 
+# ---------- دوال مساعدة آمنة ----------
+def safe_float(value, default=0.0):
+    """تحويل آمن إلى float مع إرجاع default عند الفشل"""
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return default
+
+def format_currency(value):
+    """تنسيق العملة بشكل آمن"""
+    val = safe_float(value, 0.0)
+    return f"{val:,.2f}"
+
 # ---------- دوال دعم العربية في PDF ----------
 def download_arabic_font():
     font_path = "Amiri-Regular.ttf"
@@ -52,11 +65,7 @@ def reshape_arabic_text(text):
     return bidi_text
 
 def parse_currency(value):
-    if isinstance(value, (int, float)):
-        return float(value)
-    if isinstance(value, str):
-        return float(value.replace(',', '').strip())
-    return 0.0
+    return safe_float(value, 0.0)
 
 def parse_date_safe(value, default=None):
     if not value:
@@ -70,14 +79,6 @@ def parse_date_safe(value, default=None):
             return datetime.fromisoformat(str(value)).date()
         except:
             return default or date.today()
-
-def format_currency(value):
-    # Handle None or non-numeric gracefully
-    try:
-        val = float(value)
-        return f"{val:,.2f}"
-    except (TypeError, ValueError):
-        return "0.00"
 
 def split_header_text(col):
     if col == 'المبلغ شامل الضريبة':
@@ -929,11 +930,11 @@ def import_contracts_from_excel(uploaded_file):
 
                 start_date = pd.to_datetime(row["تاريخ البداية"]).date()
                 end_date = pd.to_datetime(row["تاريخ النهاية"]).date()
-                rent_amount = float(row.get("قيمة الإيجار السنوي", 0.0)) if "قيمة الإيجار السنوي" in df.columns else 0.0
+                rent_amount = safe_float(row.get("قيمة الإيجار السنوي", 0.0))
                 interval_months = int(row.get("دورية السداد (شهور)", 1)) if "دورية السداد (شهور)" in df.columns else 1
-                deposit_amount = float(row.get("التأمين", 0.0)) if "التأمين" in df.columns else 0.0
+                deposit_amount = safe_float(row.get("التأمين", 0.0))
                 tax_included = 1 if row.get("شامل الضريبة", False) else 0
-                tax_rate = float(row.get("نسبة الضريبة", 0.15)) if "نسبة الضريبة" in df.columns else 0.15
+                tax_rate = safe_float(row.get("نسبة الضريبة", 0.15))
                 notes = str(row.get("ملاحظات", "")).strip() if "ملاحظات" in df.columns else ""
 
                 if start_date >= end_date:
@@ -1427,7 +1428,8 @@ elif menu == "إدارة البيانات":
                         st.write(f"**التأمين:** {format_currency(cinfo['deposit_amount'])}")
                         st.write(f"**الحالة:** {cinfo['status']}")
                         st.write(f"**شامل الضريبة:** {'نعم' if cinfo['tax_included'] else 'لا'}")
-                        st.write(f"**نسبة الضريبة:** {cinfo['tax_rate']*100:.1f}%")
+                        tax_rate_val = safe_float(cinfo['tax_rate'], 0.0)
+                        st.write(f"**نسبة الضريبة:** {tax_rate_val*100:.1f}%")
                         st.write(f"**ملاحظات:** {cinfo['notes'] or 'لا يوجد'}")
 
                         if cinfo['contract_file']:
@@ -1464,7 +1466,7 @@ elif menu == "إدارة البيانات":
                                 interval_months = st.number_input("دورية السداد (شهور)", min_value=1, value=int(cdata['interval_months']))
                                 deposit_amount = st.number_input("التأمين", min_value=0.0, step=100.0, value=float(cdata['deposit_amount']))
                                 tax_included = st.checkbox("المبلغ شامل الضريبة", value=bool(cdata['tax_included']))
-                                tax_rate = st.number_input("نسبة الضريبة (%)", min_value=0.0, value=float(cdata['tax_rate'])*100, step=1.0) / 100
+                                tax_rate = st.number_input("نسبة الضريبة (%)", min_value=0.0, value=float(safe_float(cdata['tax_rate'], 0.0))*100, step=1.0) / 100
                                 notes = st.text_area("ملاحظات", value=cdata['notes'] or "")
                                 new_contract_file = st.file_uploader("استبدال ملف العقد (PDF)", type=["pdf"])
                                 if st.form_submit_button("حفظ التعديلات"):
@@ -1888,9 +1890,9 @@ elif menu == "التقارير":
             if not df.empty:
                 tax_values = []
                 for _, row in df.iterrows():
-                    amount = float(row['المبلغ شامل الضريبة'])
+                    amount = safe_float(row['المبلغ شامل الضريبة'])
                     tax_included = int(row['شامل الضريبة'])
-                    tax_rate = float(row['نسبة الضريبة'])
+                    tax_rate = safe_float(row['نسبة الضريبة'], 0.0)
                     if tax_included == 1:
                         if tax_rate > 0:
                             tax = amount * (tax_rate / (1 + tax_rate))
