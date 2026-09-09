@@ -31,9 +31,12 @@ def safe_float(value, default=0.0):
         return default
 
 def format_currency(value):
-    """تنسيق العملة بشكل آمن"""
+    """تنسيق العملة بشكل آمن مع إزالة الأصفار الزائدة"""
     val = safe_float(value, 0.0)
-    return f"{val:,.2f}"
+    if val == int(val):
+        return f"{int(val):,}"
+    else:
+        return f"{val:,.2f}"
 
 # ---------- دوال دعم العربية في PDF ----------
 def download_arabic_font():
@@ -1464,7 +1467,7 @@ elif menu == "إدارة البيانات":
                                 end_date = st.date_input("تاريخ النهاية", value=parse_date_safe(cdata['end_date']))
                                 rent_amount = st.number_input("قيمة الإيجار السنوي", min_value=0.0, step=100.0, value=float(cdata['rent_amount']))
                                 interval_months = st.number_input("دورية السداد (شهور)", min_value=1, value=int(cdata['interval_months']))
-                                deposit_amount = st.number_input("التأمين", min_value=0.0, step=100.0, value=float(cdata['deposit_amount']))
+                                deposit_amount = st.number_input("التأمين", min_value=0.0, step=100.0, value=float(safe_float(cdata['deposit_amount'], 0.0)))
                                 tax_included = st.checkbox("المبلغ شامل الضريبة", value=bool(cdata['tax_included']))
                                 tax_rate = st.number_input("نسبة الضريبة (%)", min_value=0.0, value=float(safe_float(cdata['tax_rate'], 0.0))*100, step=1.0) / 100
                                 notes = st.text_area("ملاحظات", value=cdata['notes'] or "")
@@ -1584,6 +1587,7 @@ elif menu == "سندات القبض":
                         st.info("لا توجد دفعات مستحقة")
                     else:
                         df_dues = pd.DataFrame(dues, columns=["رقم الدفعة", "تاريخ الاستحقاق", "المبلغ", "المدفوع", "المتبقي"])
+                        # عرض المبالغ بتنسيق بدون أصفار زائدة
                         df_dues["المبلغ"] = df_dues["المبلغ"].apply(format_currency)
                         df_dues["المدفوع"] = df_dues["المدفوع"].apply(format_currency)
                         df_dues["المتبقي"] = df_dues["المتبقي"].apply(format_currency)
@@ -1591,9 +1595,11 @@ elif menu == "سندات القبض":
                         payment_ids = df_dues["رقم الدفعة"].tolist()
                         payment_id = st.selectbox("اختر الدفعة", payment_ids, format_func=lambda x: f"دفعة رقم {x}")
                         if payment_id:
-                            remaining_amount = float(df_dues[df_dues["رقم الدفعة"] == payment_id]["المتبقي"].iloc[0].replace(",", ""))
+                            # الحصول على المتبقي من البيانات الأصلية
+                            original_due = [d for d in dues if d[0] == payment_id][0]
+                            remaining_amount = original_due[4]  # المتبقي الأصلي كرقم
                             payment_date = st.date_input("تاريخ السداد", value=today)
-                            amount = st.number_input("المبلغ", min_value=0.0, max_value=remaining_amount, value=remaining_amount, step=100.0)
+                            amount = st.number_input("المبلغ", min_value=0.0, max_value=float(remaining_amount), value=float(remaining_amount), step=100.0)
                             method = st.selectbox("طريقة الدفع", ["نقدي", "تحويل بنكي", "شيك", "دفع في المنصة"])
                             attachment = st.file_uploader("مرفق دليل الدفع", type=["pdf", "png", "jpg", "jpeg"])
                             if st.button("تسجيل السداد"):
