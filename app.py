@@ -411,7 +411,7 @@ def print_receipt(receipt_id):
 # ---------- إدارة قاعدة البيانات ----------
 def get_conn():
     conn = sqlite3.connect("rentals.db", timeout=10)
-    conn.row_factory = sqlite3.Row  # ✅ إضافة مهمة: جعل النتائج dict
+    conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA journal_mode=WAL;")
     conn.execute("PRAGMA synchronous=NORMAL;")
     return conn
@@ -1119,8 +1119,9 @@ elif menu == "إدارة البيانات":
                         cur = conn.cursor()
                         tenant_info = cur.execute("SELECT * FROM tenants WHERE id=?", (tenant_id,)).fetchone()
                         st.markdown(f"**الاسم:** {tenant_info['name']} | **الهاتف:** {tenant_info['phone'] or 'غير محدد'} | **المنطقة:** {tenant_info['region'] or 'غير محدد'}")
+                        # ✅ إصلاح: إزالة c.id من SELECT
                         contracts = cur.execute("""
-                            SELECT c.id, c.contract_number, p.name, c.start_date, c.end_date, c.status, c.rent_amount, c.interval_months
+                            SELECT c.contract_number, p.name, c.start_date, c.end_date, c.status, c.rent_amount, c.interval_months
                             FROM contracts c JOIN properties p ON c.property_id=p.id WHERE c.tenant_id=?
                         """, (tenant_id,)).fetchall()
                         conn.close()
@@ -1195,8 +1196,9 @@ elif menu == "إدارة البيانات":
                         cur = conn.cursor()
                         prop_info = cur.execute("SELECT * FROM properties WHERE id=?", (prop_id,)).fetchone()
                         st.markdown(f"**الاسم:** {prop_info['name']} | **المنطقة:** {prop_info['region'] or 'غير محدد'} | **العنوان:** {prop_info['address'] or 'غير محدد'}")
+                        # ✅ إصلاح: إزالة c.id من SELECT
                         contracts = cur.execute("""
-                            SELECT c.id, c.contract_number, t.name, c.start_date, c.end_date, c.status
+                            SELECT c.contract_number, t.name, c.start_date, c.end_date, c.status
                             FROM contracts c JOIN tenants t ON c.tenant_id=t.id WHERE c.property_id=?
                         """, (prop_id,)).fetchall()
                         conn.close()
