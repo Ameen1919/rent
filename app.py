@@ -733,7 +733,6 @@ current_user_id = user_info['id']
 current_role = user_info['role']
 user_permissions = load_permissions(current_user_id)
 
-# إضافة CSS مخصص بعد تسجيل الدخول
 st.markdown(f"""<style>html,body,[class*="css"]{{direction:rtl;text-align:right;font-size:{font_size}px;}}.stApp{{background-color:{background_color};}}.stSidebar{{background-color:{primary_color};color:white;}}.stSidebar [data-testid="stMarkdown"]{{color:white;}}.stSidebar .stRadio label,.stSidebar .stSelectbox label{{color:white!important;}}.stButton>button{{background-color:{secondary_color};color:white;border-radius:8px;border:none;padding:8px 16px;font-weight:bold;}}.stButton>button:hover{{background-color:{primary_color};color:white;}}h1,h2,h3,h4{{color:{primary_color};}}.stMetric{{background-color:white;padding:15px;border-radius:10px;box-shadow:0 2px 5px rgba(0,0,0,0.1);text-align:center;}}.stDataFrame,.stTable{{background-color:white;border-radius:10px;padding:10px;box-shadow:0 2px 5px rgba(0,0,0,0.1);}}.stApp header{{background-color:{primary_color};color:white;}}</style>""", unsafe_allow_html=True)
 
 if logo_data:
@@ -1212,6 +1211,57 @@ def get_all_properties():
     props = cur.fetchall()
     conn.close()
     return [(p[0], p[1]) for p in props]
+
+# ---------- دوال القوالب ----------
+def download_tenants_template():
+    df = pd.DataFrame(columns=[
+        "الاسم", "الهاتف", "رقم الهوية / الإقامة", "العنوان", "المنطقة", "ملاحظات"
+    ])
+    df.loc[0] = ["مثال: أحمد محمد", "0501234567", "1234567890", "شارع الملك فهد", "الرياض", "مثال"]
+    output = io.BytesIO()
+    with pd.ExcelWriter(output, engine='xlsxwriter') as writer:
+        df.to_excel(writer, index=False, sheet_name='المستأجرين')
+    output.seek(0)
+    st.download_button(
+        label="تحميل قالب استيراد المستأجرين",
+        data=output.getvalue(),
+        file_name="نموذج_استيراد_المستأجرين.xlsx",
+        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+    )
+
+def download_contracts_template():
+    df = pd.DataFrame(columns=[
+        "اسم المستأجر", "اسم العقار", "تاريخ البداية", "تاريخ النهاية",
+        "قيمة الإيجار السنوي", "دورية السداد (شهور)", "التأمين",
+        "شامل الضريبة", "نسبة الضريبة", "ملاحظات"
+    ])
+    df.loc[0] = ["أحمد محمد", "عمارة النخبة", "2025-01-01", "2025-12-31", 60000, 6, 5000, 0, 0.15, "مثال"]
+    output = io.BytesIO()
+    with pd.ExcelWriter(output, engine='xlsxwriter') as writer:
+        df.to_excel(writer, index=False, sheet_name='العقود')
+    output.seek(0)
+    st.download_button(
+        label="تحميل قالب استيراد العقود",
+        data=output.getvalue(),
+        file_name="نموذج_استيراد_العقود.xlsx",
+        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+    )
+
+def download_properties_template():
+    df = pd.DataFrame(columns=[
+        "الاسم", "الوصف", "العنوان", "المنطقة", "المساحة"
+    ])
+    df.loc[0] = ["عمارة النخبة", "عمارة سكنية 4 شقق", "حي الروضة", "جدة", "500 م²"]
+    output = io.BytesIO()
+    with pd.ExcelWriter(output, engine='xlsxwriter') as writer:
+        df.to_excel(writer, index=False, sheet_name='العقارات')
+    output.seek(0)
+    st.download_button(
+        label="تحميل قالب استيراد العقارات",
+        data=output.getvalue(),
+        file_name="نموذج_استيراد_العقارات.xlsx",
+        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+    )
 
 # ================== لوحة التحكم ==================
 if menu == "لوحة التحكم" and has_permission(current_user_id, "لوحة التحكم"):
@@ -2087,7 +2137,8 @@ elif menu == "التقارير":
                 df['مبلغ الضريبة'] = tax_values
                 df['المبلغ غير شامل الضريبة'] = df['المبلغ شامل الضريبة'] - df['مبلغ الضريبة']
                 df = df[['اسم المستأجر', 'رقم العقد', 'بداية الفترة', 'نهاية الفترة', 'المبلغ شامل الضريبة', 'نسبة الضريبة', 'مبلغ الضريبة', 'المبلغ غير شامل الضريبة', 'طريقة الدفع']]
-                rtl_dataframe(df, key="tax_report_df")
+                # استخدام display_dataframe_with_reorder للحصول على selected_cols
+                df_display, selected_cols = display_dataframe_with_reorder(df.copy(), "report_tax")
                 total_amount = df['المبلغ شامل الضريبة'].sum()
                 total_tax = df['مبلغ الضريبة'].sum()
                 total_net = df['المبلغ غير شامل الضريبة'].sum()
@@ -2096,9 +2147,9 @@ elif menu == "التقارير":
                 st.write(f"**إجمالي المبلغ غير شامل الضريبة:** {format_currency(total_net)}")
                 output = io.BytesIO()
                 with pd.ExcelWriter(output, engine='xlsxwriter') as writer:
-                    df.to_excel(writer, index=False)
+                    df_display.to_excel(writer, index=False)
                 st.download_button("تحميل Excel", data=output.getvalue(), file_name=f"ضرائب_{from_date}_to_{to_date}.xlsx")
-                export_tax_pdf(df, "تقرير الضرائب", f"ضرائب_{from_date}_to_{to_date}.pdf", columns_order=selected_cols)
+                export_tax_pdf(df_display, "تقرير الضرائب", f"ضرائب_{from_date}_to_{to_date}.pdf", columns_order=selected_cols)
             else:
                 st.info("لا توجد دفعات مدفوعة بالكامل في هذه الفترة")
 
