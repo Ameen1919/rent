@@ -550,12 +550,6 @@ def create_payment_schedule(cid, tid, sd, ed, ra, im):
     return cnt
 
 def create_temporary_payment_schedule(cid, tid, sd, ed, total_amount, interval_months, note=""):
-    """إنشاء جدول دفعات مؤقتة بنفس منطق العقد العادي.
-    total_amount = إجمالي المبلغ للسنة الكاملة (مثلاً 69000)
-    interval_months = كل كم شهر (مثلاً 6)
-    الدفعة الواحدة = total_amount * interval_months / 12
-    المواعيد: sd, sd+step, sd+2*step ... حتى ed
-    """
     step = relativedelta(months=interval_months)
     current = sd
     payment_amount = total_amount * interval_months / 12.0
@@ -671,7 +665,8 @@ def load_receipts():
     conn = get_conn()
     df = pd.read_sql_query('''SELECT r.id as 'الرقم', r.receipt_number as 'رقم السند', t.name as 'المستأجر',
         r.amount as 'المبلغ', r.receipt_date as 'التاريخ', r.payment_method as 'طريقة الدفع',
-        r.notes as 'ملاحظات', r.attachment as 'المرفق' FROM receipts r JOIN tenants t ON r.tenant_id = t.id
+        r.notes as 'ملاحظات', r.attachment as 'المرفق', t.region as 'المنطقة', r.tenant_id as 'معرف_المستأجر'
+        FROM receipts r JOIN tenants t ON r.tenant_id = t.id
         ORDER BY r.receipt_date DESC''', conn)
     conn.close(); return df
 
@@ -897,7 +892,8 @@ elif menu == "إدارة البيانات":
             with ci2:
                 uf = st.file_uploader("استيراد", type=["xlsx","xls"], key="imp_t")
                 if uf and st.button("تنفيذ", key="btn_imp_t"): import_tenants_from_excel(uf); st.rerun()
-            if st.button("➕ إضافة مستأجر", key="add_t"): st.session_state['show_add_t'] = True
+            if st.button("➕ إضافة مستأجر", key="btn_add_t"):
+                st.session_state['show_add_t'] = True
             if st.session_state.get('show_add_t'):
                 with st.form("add_t_f"):
                     n = st.text_input("الاسم *"); p = st.text_input("الهاتف"); ni = st.text_input("رقم الهوية")
@@ -919,7 +915,7 @@ elif menu == "إدارة البيانات":
                 if sq: f = f[f.apply(lambda row: sq.lower() in str(row.values).lower(), axis=1)]
                 if not f.empty:
                     display_dataframe_with_reorder(f, "tenants")
-                    tid = st.selectbox("اختر", f["الرقم"], format_func=lambda x: f[f["الرقم"]==x]["الاسم"].iloc[0])
+                    tid = st.selectbox("اختر", f["الرقم"], format_func=lambda x: f[f["الرقم"]==x]["الاسم"].iloc[0], key="sel_tenant_edit")
                     if tid:
                         conn = get_conn(); cur = conn.cursor()
                         ti = cur.execute("SELECT * FROM tenants WHERE id=?", (tid,)).fetchone()
@@ -930,8 +926,9 @@ elif menu == "إدارة البيانات":
                             rtl_dataframe(pd.DataFrame(cons, columns=["رقم العقد","العقار","بداية","نهاية","الحالة"]))
                         if current_role == 'مدير':
                             c1, c2 = st.columns(2)
-                            if c1.button("تعديل", key="ed_t"): st.session_state['ed_t'] = tid; st.rerun()
-                            if c2.button("حذف", key="dl_t"):
+                            if c1.button("تعديل", key=f"btn_ed_t_{tid}"): 
+                                st.session_state['edit_tenant_id'] = tid; st.rerun()
+                            if c2.button("حذف", key=f"btn_dl_t_{tid}"):
                                 conn = get_conn(); cur = conn.cursor()
                                 hc = cur.execute("SELECT COUNT(*) FROM contracts WHERE tenant_id=?", (tid,)).fetchone()[0]
                                 if hc > 0: st.error("لديه عقود")
@@ -939,10 +936,10 @@ elif menu == "إدارة البيانات":
                                     cur.execute("DELETE FROM tenants WHERE id=?", (tid,)); conn.commit()
                                     st.toast("تم الحذف", icon="🗑️"); st.rerun()
                                 conn.close()
-                        if st.session_state.get('ed_t') == tid:
+                        if st.session_state.get('edit_tenant_id') == tid:
                             conn = get_conn(); cur = conn.cursor()
                             td = cur.execute("SELECT * FROM tenants WHERE id=?", (tid,)).fetchone(); conn.close()
-                            with st.form("ed_t_f"):
+                            with st.form(f"ed_t_f_{tid}"):
                                 n = st.text_input("الاسم", value=td['name']); p = st.text_input("الهاتف", value=td['phone'] or "")
                                 ni = st.text_input("الهوية", value=td['national_id'] or ""); a = st.text_input("العنوان", value=td['address'] or "")
                                 r = st.text_input("المنطقة", value=td['region'] or ""); nt = st.text_area("ملاحظات", value=td['notes'] or "")
@@ -951,7 +948,7 @@ elif menu == "إدارة البيانات":
                                     cur.execute("UPDATE tenants SET name=?, phone=?, national_id=?, address=?, region=?, notes=? WHERE id=?",
                                                 (n,p,ni,a,r,nt,tid))
                                     conn.commit(); conn.close(); st.cache_data.clear()
-                                    st.toast("تم التحديث", icon="✅"); st.session_state['ed_t'] = None; st.rerun()
+                                    st.toast("تم التحديث", icon="✅"); st.session_state['edit_tenant_id'] = None; st.rerun()
                 else: st.info("لا نتائج")
         with t2:
             st.subheader("🏬 العقارات")
@@ -967,7 +964,8 @@ elif menu == "إدارة البيانات":
             with ci2:
                 uf = st.file_uploader("استيراد", type=["xlsx","xls"], key="imp_p")
                 if uf and st.button("تنفيذ", key="btn_imp_p"): import_properties_from_excel(uf); st.rerun()
-            if st.button("➕ إضافة عقار", key="add_p"): st.session_state['show_add_p'] = True
+            if st.button("➕ إضافة عقار", key="btn_add_p"):
+                st.session_state['show_add_p'] = True
             if st.session_state.get('show_add_p'):
                 with st.form("add_p_f"):
                     n = st.text_input("الاسم *"); d = st.text_area("الوصف"); a = st.text_input("العنوان")
@@ -985,7 +983,7 @@ elif menu == "إدارة البيانات":
                 f = dfp[dfp.apply(lambda row: sq.lower() in str(row.values).lower(), axis=1)] if sq else dfp
                 if not f.empty:
                     display_dataframe_with_reorder(f, "props")
-                    pid = st.selectbox("اختر", f["الرقم"], format_func=lambda x: f[f["الرقم"]==x]["الاسم"].iloc[0])
+                    pid = st.selectbox("اختر", f["الرقم"], format_func=lambda x: f[f["الرقم"]==x]["الاسم"].iloc[0], key="sel_prop_edit")
                     if pid:
                         conn = get_conn(); cur = conn.cursor()
                         pi = cur.execute("SELECT * FROM properties WHERE id=?", (pid,)).fetchone()
@@ -995,8 +993,9 @@ elif menu == "إدارة البيانات":
                         if cons: rtl_dataframe(pd.DataFrame(cons, columns=["رقم العقد","المستأجر","بداية","نهاية","الحالة"]))
                         if current_role == 'مدير':
                             c1, c2 = st.columns(2)
-                            if c1.button("تعديل", key="ed_p"): st.session_state['ed_p'] = pid; st.rerun()
-                            if c2.button("حذف", key="dl_p"):
+                            if c1.button("تعديل", key=f"btn_ed_p_{pid}"): 
+                                st.session_state['edit_property_id'] = pid; st.rerun()
+                            if c2.button("حذف", key=f"btn_dl_p_{pid}"):
                                 conn = get_conn(); cur = conn.cursor()
                                 hc = cur.execute("SELECT COUNT(*) FROM contracts WHERE property_id=?", (pid,)).fetchone()[0]
                                 if hc > 0: st.error("لديه عقود")
@@ -1004,10 +1003,10 @@ elif menu == "إدارة البيانات":
                                     cur.execute("DELETE FROM properties WHERE id=?", (pid,)); conn.commit()
                                     st.toast("تم الحذف", icon="🗑️"); st.rerun()
                                 conn.close()
-                        if st.session_state.get('ed_p') == pid:
+                        if st.session_state.get('edit_property_id') == pid:
                             conn = get_conn(); cur = conn.cursor()
                             pd_ = cur.execute("SELECT * FROM properties WHERE id=?", (pid,)).fetchone(); conn.close()
-                            with st.form("ed_p_f"):
+                            with st.form(f"ed_p_f_{pid}"):
                                 n = st.text_input("الاسم", value=pd_['name']); d = st.text_area("الوصف", value=pd_['description'] or "")
                                 a = st.text_input("العنوان", value=pd_['address'] or ""); r = st.text_input("المنطقة", value=pd_['region'] or "")
                                 ar = st.text_input("المساحة", value=pd_['area'] or "")
@@ -1015,7 +1014,7 @@ elif menu == "إدارة البيانات":
                                     conn = get_conn(); cur = conn.cursor()
                                     cur.execute("UPDATE properties SET name=?, description=?, address=?, region=?, area=? WHERE id=?", (n,d,a,r,ar,pid))
                                     conn.commit(); conn.close(); st.cache_data.clear()
-                                    st.toast("تم التحديث", icon="✅"); st.session_state['ed_p'] = None; st.rerun()
+                                    st.toast("تم التحديث", icon="✅"); st.session_state['edit_property_id'] = None; st.rerun()
                 else: st.info("لا نتائج")
         with t3:
             st.subheader("📄 العقود")
@@ -1031,7 +1030,8 @@ elif menu == "إدارة البيانات":
             with ci2:
                 uf = st.file_uploader("استيراد", type=["xlsx","xls"], key="imp_c")
                 if uf and st.button("تنفيذ", key="btn_imp_c"): import_contracts_from_excel(uf); st.rerun()
-            if st.button("➕ إضافة عقد", key="add_c"): st.session_state['show_add_c'] = True
+            if st.button("➕ إضافة عقد", key="btn_add_c"):
+                st.session_state['show_add_c'] = True
             if st.session_state.get('show_add_c'):
                 at = get_active_tenants()
                 if not at: st.warning("لا يوجد مستأجرين متاحين")
@@ -1080,7 +1080,7 @@ elif menu == "إدارة البيانات":
                 if tfc != "الكل": fc = fc[fc["اسم المستأجر"]==tfc]
                 if not fc.empty:
                     display_dataframe_with_reorder(fc, "contracts")
-                    cid = st.selectbox("اختر عقد", fc["الرقم"], format_func=lambda x: fc[fc["الرقم"]==x]["رقم العقد"].iloc[0])
+                    cid = st.selectbox("اختر عقد", fc["الرقم"], format_func=lambda x: fc[fc["الرقم"]==x]["رقم العقد"].iloc[0], key="sel_contract")
                     if cid:
                         conn = get_conn(); cur = conn.cursor()
                         ci = cur.execute('''SELECT c.*, t.name as tenant_name, t.phone as tphone, t.region as tregion,
@@ -1110,9 +1110,9 @@ elif menu == "إدارة البيانات":
                                 dft = pd.DataFrame(tiers)[['id','start_date','end_date','annual_rent','notes']]
                                 dft.columns = ['الرقم','من','إلى','الإيجار','ملاحظات']
                                 rtl_dataframe(dft)
-                                dt = st.selectbox("حذف", [t['id'] for t in tiers], key="dt")
-                                if st.button("🗑️ حذف", key="bdt"): delete_pricing_tier(dt); st.toast("تم الحذف", icon="🗑️"); st.rerun()
-                            with st.form("tier_f"):
+                                dt = st.selectbox("حذف", [t['id'] for t in tiers], key=f"dt_{cid}")
+                                if st.button("🗑️ حذف", key=f"bdt_{cid}"): delete_pricing_tier(dt); st.toast("تم الحذف", icon="🗑️"); st.rerun()
+                            with st.form(f"tier_f_{cid}"):
                                 c1,c2,c3 = st.columns(3)
                                 ts = c1.date_input("من", value=parse_date_safe(ci['start_date']))
                                 te = c2.date_input("إلى", value=parse_date_safe(ci['end_date']))
@@ -1120,7 +1120,7 @@ elif menu == "إدارة البيانات":
                                 tn = st.text_input("ملاحظات")
                                 if st.form_submit_button("➕ إضافة فترة"):
                                     add_pricing_tier(cid, ts, te, tr_, tn); st.toast("تمت الإضافة", icon="✅"); st.rerun()
-                            if st.button("🔄 إعادة توليد الدفعات", key="rgt"):
+                            if st.button("🔄 إعادة توليد الدفعات", key=f"rgt_{cid}"):
                                 conn = get_conn(); cur = conn.cursor()
                                 cur.execute("DELETE FROM payments WHERE contract_id=? AND (is_temporary IS NULL OR is_temporary=0)", (cid,))
                                 conn.commit(); conn.close()
@@ -1134,9 +1134,9 @@ elif menu == "إدارة البيانات":
                                 dff.columns = ['الرقم','الرسم','المبلغ','الدورية','خاضع','ملاحظات']
                                 dff['خاضع'] = dff['خاضع'].apply(lambda x: 'نعم' if x else 'لا')
                                 rtl_dataframe(dff)
-                                df_ = st.selectbox("حذف", [f['id'] for f in fees], key="df_")
-                                if st.button("🗑️ حذف", key="bdf"): delete_additional_fee(df_); st.toast("تم الحذف", icon="🗑️"); st.rerun()
-                            with st.form("fee_f"):
+                                df_ = st.selectbox("حذف", [f['id'] for f in fees], key=f"df_{cid}")
+                                if st.button("🗑️ حذف", key=f"bdf_{cid}"): delete_additional_fee(df_); st.toast("تم الحذف", icon="🗑️"); st.rerun()
+                            with st.form(f"fee_f_{cid}"):
                                 c1,c2,c3 = st.columns(3)
                                 fn = c1.text_input("الرسم", value="مصاريف مياه")
                                 fa = c2.number_input("المبلغ", min_value=0.0, step=100.0, value=3000.0)
@@ -1152,9 +1152,9 @@ elif menu == "إدارة البيانات":
                                 dfd = pd.DataFrame(discs)[['id','discount_type','discount_value','start_date','end_date','reason']]
                                 dfd.columns = ['الرقم','النوع','القيمة','من','إلى','السبب']
                                 rtl_dataframe(dfd)
-                                dd_ = st.selectbox("حذف", [d['id'] for d in discs], key="dd_")
-                                if st.button("🗑️ حذف", key="bdd"): delete_discount(dd_); st.toast("تم الحذف", icon="🗑️"); st.rerun()
-                            with st.form("disc_f"):
+                                dd_ = st.selectbox("حذف", [d['id'] for d in discs], key=f"dd_{cid}")
+                                if st.button("🗑️ حذف", key=f"bdd_{cid}"): delete_discount(dd_); st.toast("تم الحذف", icon="🗑️"); st.rerun()
+                            with st.form(f"disc_f_{cid}"):
                                 c1,c2 = st.columns(2)
                                 dtp = c1.selectbox("النوع", ["نسبة","مبلغ"])
                                 dv = c2.number_input("القيمة", min_value=0.0, step=1.0, value=10.0)
@@ -1164,7 +1164,7 @@ elif menu == "إدارة البيانات":
                                 dr = st.text_input("السبب", value="ظروف طارئة")
                                 if st.form_submit_button("➕ إضافة خصم"):
                                     add_discount(cid, dtp, dv, ds, de, dr); st.toast("تمت الإضافة", icon="✅"); st.rerun()
-                            if st.button("🔄 إعادة توليد الدفعات مع الخصومات", key="rgd"):
+                            if st.button("🔄 إعادة توليد الدفعات مع الخصومات", key=f"rgd_{cid}"):
                                 conn = get_conn(); cur = conn.cursor()
                                 cur.execute("DELETE FROM payments WHERE contract_id=? AND (is_temporary IS NULL OR is_temporary=0)", (cid,))
                                 conn.commit(); conn.close()
@@ -1172,14 +1172,15 @@ elif menu == "إدارة البيانات":
                                 st.toast(f"تم إعادة توليد {cnt} دفعة", icon="✅"); st.rerun()
                         if current_role == 'مدير':
                             c1, c2 = st.columns(2)
-                            if c1.button("تعديل العقد", key="ed_c"): st.session_state['ed_c'] = cid; st.rerun()
-                            if c2.button("حذف العقد", key="dl_c"):
+                            if c1.button("تعديل العقد", key=f"btn_ed_c_{cid}"): 
+                                st.session_state['edit_contract_id'] = cid; st.rerun()
+                            if c2.button("حذف العقد", key=f"btn_dl_c_{cid}"):
                                 delete_contract(cid); st.toast("تم الحذف", icon="🗑️"); st.rerun()
-                        if st.session_state.get('ed_c') == cid:
+                        if st.session_state.get('edit_contract_id') == cid:
                             conn = get_conn(); cur = conn.cursor()
                             cd = cur.execute("SELECT * FROM contracts WHERE id=?", (cid,)).fetchone(); conn.close()
                             dft = load_tenants(); dfp = load_properties()
-                            with st.form("ed_c_f"):
+                            with st.form(f"ed_c_f_{cid}"):
                                 tid = st.selectbox("المستأجر", dft["الرقم"], index=dft.index[dft["الرقم"]==cd['tenant_id']][0], format_func=lambda x: dft[dft["الرقم"]==x]["الاسم"].iloc[0])
                                 pid = st.selectbox("العقار", dfp["الرقم"], index=dfp.index[dfp["الرقم"]==cd['property_id']][0], format_func=lambda x: dfp[dfp["الرقم"]==x]["الاسم"].iloc[0])
                                 cn = st.text_input("رقم العقد", value=cd['contract_number'])
@@ -1206,7 +1207,7 @@ elif menu == "إدارة البيانات":
                                         conn.commit(); conn.close()
                                         cnt = create_payment_schedule(cid, tid, sd, ed, ra, im)
                                         st.cache_data.clear(); st.toast(f"تم التحديث ({cnt} دفعة)", icon="✅")
-                                        st.session_state['ed_c'] = None; st.rerun()
+                                        st.session_state['edit_contract_id'] = None; st.rerun()
                 else: st.info("لا عقود")
 
 elif menu == "الدفعات":
@@ -1235,12 +1236,12 @@ elif menu == "الدفعات":
             if current_role == 'مدير':
                 dfp = load_payments()
                 if not dfp.empty:
-                    pid = st.selectbox("اختر دفعة", dfp["الرقم"].tolist())
+                    pid = st.selectbox("اختر دفعة", dfp["الرقم"].tolist(), key="sel_pay_edit")
                     if pid:
                         conn = get_conn(); cur = conn.cursor()
                         pd_ = cur.execute("SELECT due_date, amount, status, notes FROM payments WHERE id=?", (pid,)).fetchone()
                         conn.close()
-                        with st.form("ed_pay_f"):
+                        with st.form(f"ed_pay_f_{pid}"):
                             dd = st.date_input("الاستحقاق", value=parse_date_safe(pd_[0]))
                             am = st.number_input("المبلغ", min_value=0.0, step=100.0, value=float(pd_[1]))
                             stt = st.selectbox("الحالة", ["مستحق","مدفوع","جزئي","متأخر"], index=["مستحق","مدفوع","جزئي","متأخر"].index(pd_[2]))
@@ -1264,7 +1265,7 @@ elif menu == "سندات القبض":
                 dft = load_tenants()
                 if dft.empty: st.warning("لا مستأجرين")
                 else:
-                    tid = st.selectbox("المستأجر", dft["الرقم"], format_func=lambda x: dft[dft["الرقم"]==x]["الاسم"].iloc[0])
+                    tid = st.selectbox("المستأجر", dft["الرقم"], format_func=lambda x: dft[dft["الرقم"]==x]["الاسم"].iloc[0], key="sel_tenant_pay")
                     today = date.today()
                     conn = get_conn(); cur = conn.cursor()
                     dues = cur.execute('''SELECT id, due_date, amount, paid_amount, (amount - paid_amount) as remaining
@@ -1275,15 +1276,15 @@ elif menu == "سندات القبض":
                     else:
                         dfd = pd.DataFrame(dues, columns=["رقم الدفعة","الاستحقاق","المبلغ","المدفوع","المتبقي"])
                         rtl_dataframe(dfd)
-                        pid = st.selectbox("الدفعة", dfd["رقم الدفعة"].tolist(), format_func=lambda x: f"دفعة {x}")
+                        pid = st.selectbox("الدفعة", dfd["رقم الدفعة"].tolist(), format_func=lambda x: f"دفعة {x}", key="sel_pay_pay")
                         if pid:
                             od = [d for d in dues if d[0]==pid][0]
                             rem = od[4]
-                            pdte = st.date_input("تاريخ السداد", value=today)
-                            am = st.number_input("المبلغ", min_value=0.0, max_value=float(rem), value=float(rem), step=100.0)
-                            mt = st.selectbox("طريقة الدفع", ["نقدي","تحويل بنكي","شيك","دفع في المنصة"])
-                            att = st.file_uploader("مرفق", type=["pdf","png","jpg","jpeg"])
-                            if st.button("تسجيل السداد"):
+                            pdte = st.date_input("تاريخ السداد", value=today, key="pay_date_in")
+                            am = st.number_input("المبلغ", min_value=0.0, max_value=float(rem), value=float(rem), step=100.0, key="pay_amt_in")
+                            mt = st.selectbox("طريقة الدفع", ["نقدي","تحويل بنكي","شيك","دفع في المنصة"], key="pay_mt_in")
+                            att = st.file_uploader("مرفق", type=["pdf","png","jpg","jpeg"], key="pay_att_in")
+                            if st.button("تسجيل السداد", key="btn_register_pay"):
                                 if am <= 0: st.error("المبلغ > 0")
                                 else:
                                     fb = att.read() if att else None
@@ -1302,55 +1303,86 @@ elif menu == "سندات القبض":
         with t2:
             dfr = load_receipts()
             if not dfr.empty:
-                display_dataframe_with_reorder(dfr.drop(columns=["المرفق"]), "receipts")
-                rid = st.selectbox("اختر سند", dfr["الرقم"], format_func=lambda x: f"{dfr[dfr['الرقم']==x]['رقم السند'].iloc[0]}")
-                if rid:
-                    c1, c2, c3 = st.columns(3)
-                    with c1:
-                        pdf_data = print_receipt(rid)
-                        if pdf_data: st.download_button("طباعة", data=pdf_data, file_name=f"r_{rid}.pdf", mime="application/pdf")
-                    with c2:
-                        conn = get_conn(); cur = conn.cursor()
-                        att = cur.execute("SELECT attachment FROM receipts WHERE id=?", (rid,)).fetchone()
-                        conn.close()
-                        if att and att[0]: st.download_button("تحميل المرفق", data=att[0], file_name=f"r_{rid}_att", mime="application/octet-stream")
-                    with c3:
-                        if current_role == 'مدير' and st.button("تعديل السند", key="ed_r"): st.session_state['ed_r'] = rid; st.rerun()
-                    if st.session_state.get('ed_r') == rid and current_role == 'مدير':
-                        rd = get_receipt_details(rid)
-                        if rd:
-                            st.markdown("### تعديل السند")
-                            with st.form("ed_r_f"):
-                                rn = st.text_input("رقم السند", value=rd['receipt_number'])
-                                tn = {t[0]: t[1] for t in get_all_tenants()}
-                                tid = st.selectbox("المستأجر", options=list(tn.keys()),
-                                                   index=list(tn.keys()).index(rd['tenant_id']) if rd['tenant_id'] in tn else 0,
-                                                   format_func=lambda x: tn[x])
-                                cs = get_contracts_by_tenant(tid)
-                                cn = {c[0]: c[1] for c in cs}
-                                cid = st.selectbox("العقد", options=list(cn.keys()),
-                                                   index=list(cn.keys()).index(rd['contract_id']) if rd['contract_id'] in cn else 0,
-                                                   format_func=lambda x: cn[x])
-                                ps = get_payments_by_contract(cid)
-                                po = [(None, "بدون ربط")] + ps
-                                pl = {p[0]: p[1] for p in po}
-                                pid = st.selectbox("الدفعة", options=list(pl.keys()),
-                                                   index=list(pl.keys()).index(rd['payment_id']) if rd['payment_id'] in pl else 0,
-                                                   format_func=lambda x: pl[x])
-                                am = st.number_input("المبلغ", min_value=0.0, step=100.0, value=float(rd['amount']))
-                                rdte = st.date_input("التاريخ", value=parse_date_safe(rd['receipt_date']))
-                                opts = ["نقدي","تحويل بنكي","شيك","دفع في المنصة"]
-                                mt = st.selectbox("طريقة الدفع", opts,
-                                                  index=opts.index(rd['payment_method']) if rd['payment_method'] in opts else 0)
-                                nt = st.text_area("ملاحظات", value=rd['notes'] or "")
-                                nf = st.file_uploader("مرفق جديد (اختياري)", type=["pdf","png","jpg","jpeg"])
-                                if st.form_submit_button("حفظ التعديلات"):
-                                    fb = rd['attachment']
-                                    if nf: fb = nf.read()
-                                    ok, msg = update_receipt(rid, rn, tid, cid, pid, am, rdte, mt, nt, fb)
-                                    if ok:
-                                        st.toast(msg, icon="✅"); st.session_state['ed_r'] = None; st.rerun()
-                                    else: st.error(msg)
+                # ====== فلاتر السجل الجديدة ======
+                st.markdown("### 🔎 فلاتر البحث")
+                f1, f2, f3 = st.columns(3)
+                with f1:
+                    tenant_names = ["الكل"] + sorted(dfr["المستأجر"].dropna().unique().tolist())
+                    sel_tenant = st.selectbox("المستأجر", tenant_names, key="flt_rec_tenant")
+                with f2:
+                    regions = ["الكل"] + sorted([r for r in dfr["المنطقة"].dropna().unique().tolist() if r])
+                    sel_region = st.selectbox("المنطقة", regions, key="flt_rec_region")
+                with f3:
+                    search_txt = st.text_input("بحث برقم السند أو الملاحظات", key="flt_rec_search")
+
+                dfr_f = dfr.copy()
+                if sel_tenant != "الكل":
+                    dfr_f = dfr_f[dfr_f["المستأجر"] == sel_tenant]
+                if sel_region != "الكل":
+                    dfr_f = dfr_f[dfr_f["المنطقة"] == sel_region]
+                if search_txt.strip():
+                    mask = dfr_f.apply(lambda row: search_txt.lower() in str(row.get("رقم السند","")).lower() or
+                                                  search_txt.lower() in str(row.get("ملاحظات","") or "").lower(), axis=1)
+                    dfr_f = dfr_f[mask]
+
+                if dfr_f.empty:
+                    st.info("لا نتائج مطابقة للفلاتر")
+                else:
+                    dfr_show = dfr_f.drop(columns=["المرفق","معرف_المستأجر"])
+                    display_dataframe_with_reorder(dfr_show, "receipts")
+                    rid = st.selectbox("اختر سند", dfr_f["الرقم"], 
+                                       format_func=lambda x: f"{dfr_f[dfr_f['الرقم']==x]['رقم السند'].iloc[0]}", key="sel_receipt_edit")
+                    if rid:
+                        c1, c2, c3 = st.columns(3)
+                        with c1:
+                            pdf_data = print_receipt(rid)
+                            if pdf_data: st.download_button("طباعة", data=pdf_data, file_name=f"r_{rid}.pdf", mime="application/pdf", key=f"dl_pdf_{rid}")
+                        with c2:
+                            conn = get_conn(); cur = conn.cursor()
+                            att = cur.execute("SELECT attachment FROM receipts WHERE id=?", (rid,)).fetchone()
+                            conn.close()
+                            if att and att[0]: 
+                                st.download_button("تحميل المرفق", data=att[0], file_name=f"r_{rid}_att", 
+                                                  mime="application/octet-stream", key=f"dl_att_{rid}")
+                        with c3:
+                            if current_role == 'مدير':
+                                if st.button("تعديل السند", key=f"btn_ed_r_{rid}"):
+                                    st.session_state['edit_receipt_id'] = rid; st.rerun()
+                        if st.session_state.get('edit_receipt_id') == rid and current_role == 'مدير':
+                            rd = get_receipt_details(rid)
+                            if rd:
+                                st.markdown("### تعديل السند")
+                                with st.form(f"ed_r_f_{rid}"):
+                                    rn = st.text_input("رقم السند", value=rd['receipt_number'])
+                                    tn = {t[0]: t[1] for t in get_all_tenants()}
+                                    tid = st.selectbox("المستأجر", options=list(tn.keys()),
+                                                       index=list(tn.keys()).index(rd['tenant_id']) if rd['tenant_id'] in tn else 0,
+                                                       format_func=lambda x: tn[x])
+                                    cs = get_contracts_by_tenant(tid)
+                                    cn = {c[0]: c[1] for c in cs}
+                                    cid = st.selectbox("العقد", options=list(cn.keys()),
+                                                       index=list(cn.keys()).index(rd['contract_id']) if rd['contract_id'] in cn else 0,
+                                                       format_func=lambda x: cn[x])
+                                    ps = get_payments_by_contract(cid)
+                                    po = [(None, "بدون ربط")] + ps
+                                    pl = {p[0]: p[1] for p in po}
+                                    pid = st.selectbox("الدفعة", options=list(pl.keys()),
+                                                       index=list(pl.keys()).index(rd['payment_id']) if rd['payment_id'] in pl else 0,
+                                                       format_func=lambda x: pl[x])
+                                    am = st.number_input("المبلغ", min_value=0.0, step=100.0, value=float(rd['amount']))
+                                    rdte = st.date_input("التاريخ", value=parse_date_safe(rd['receipt_date']))
+                                    opts = ["نقدي","تحويل بنكي","شيك","دفع في المنصة"]
+                                    mt = st.selectbox("طريقة الدفع", opts,
+                                                      index=opts.index(rd['payment_method']) if rd['payment_method'] in opts else 0)
+                                    nt = st.text_area("ملاحظات", value=rd['notes'] or "")
+                                    nf = st.file_uploader("مرفق جديد (اختياري)", type=["pdf","png","jpg","jpeg"])
+                                    if st.form_submit_button("حفظ التعديلات"):
+                                        fb = rd['attachment']
+                                        if nf: fb = nf.read()
+                                        ok, msg = update_receipt(rid, rn, tid, cid, pid, am, rdte, mt, nt, fb)
+                                        if ok:
+                                            st.toast(msg, icon="✅"); st.session_state['edit_receipt_id'] = None; st.rerun()
+                                        else: st.error(msg)
             else: st.info("لا سندات")
 
 elif menu == "عقود منتهية":
@@ -1367,7 +1399,7 @@ elif menu == "عقود منتهية":
                                        'interval_months':'الدورية'})
             rtl_dataframe(dfe[['رقم العقد','المستأجر','العقار','تاريخ الانتهاء','الإيجار','الدورية']])
             co = {e['id']: f"{e['contract_number']} - {e['tenant_name']} - انتهى {e['end_date']}" for e in exp}
-            sel = st.selectbox("اختر عقد", options=list(co.keys()), format_func=lambda x: co[x])
+            sel = st.selectbox("اختر عقد", options=list(co.keys()), format_func=lambda x: co[x], key="sel_expired")
             if sel:
                 ci = next(e for e in exp if e['id'] == sel)
                 st.markdown(f"### العقد: {ci['contract_number']}")
@@ -1376,13 +1408,12 @@ elif menu == "عقود منتهية":
                         f"**الدورية السابقة:** كل {ci['interval_months']} شهر")
 
                 st.markdown("---")
-                # خياران: جدول دفعات مؤقت (مثل العقد) أو دفعة واحدة
-                mode = st.radio("طريقة الإضافة", ["📋 جدول دفعات مؤقت (مثل العقد)", "➕ دفعة واحدة فقط"], horizontal=True)
+                mode = st.radio("طريقة الإضافة", ["📋 جدول دفعات مؤقت (مثل العقد)", "➕ دفعة واحدة فقط"], horizontal=True, key=f"mode_{sel}")
 
                 if mode == "📋 جدول دفعات مؤقت (مثل العقد)":
                     st.markdown("#### توليد جدول دفعات مؤقت بنفس منطق العقد")
                     st.caption("مثال: الإيجار السنوي 69,000 يدفع كل 6 شهور → 34,500 في كل دفعة، في نفس المواعيد.")
-                    with st.form("temp_schedule_f"):
+                    with st.form(f"temp_schedule_f_{sel}"):
                         c1, c2 = st.columns(2)
                         with c1:
                             sd = st.date_input("من تاريخ (بداية الفترة المؤقتة)", value=date.today())
@@ -1402,7 +1433,6 @@ elif menu == "عقود منتهية":
                                                              help="مثلاً 6 تعني كل ستة أشهر")
                         note = st.text_input("ملاحظة عامة على الدفعات",
                                             value="فترة مؤقتة حتى تجديد العقد")
-                        # معاينة الدفعات قبل الحفظ
                         if total_annual > 0 and interval_months > 0 and sd < ed:
                             payment_amount = total_annual * interval_months / 12.0
                             st.info(f"سيتم إنشاء دفعات بقيمة **{format_currency(payment_amount)}** لكل دفعة "
@@ -1420,7 +1450,7 @@ elif menu == "عقود منتهية":
 
                 else:
                     st.markdown("#### إضافة دفعة واحدة يدوياً")
-                    with st.form("temp_single_f"):
+                    with st.form(f"temp_single_f_{sel}"):
                         c1, c2 = st.columns(2)
                         with c1:
                             dd = st.date_input("تاريخ الاستحقاق", value=date.today())
@@ -1452,12 +1482,13 @@ elif menu == "عقود منتهية":
                         with col_d1:
                             did = st.selectbox("حذف دفعة واحدة",
                                               [p['id'] for p in tp],
-                                              format_func=lambda x: f"دفعة {x} - {format_currency(next((p['amount'] for p in tp if p['id']==x),0))}")
-                            if st.button("🗑️ حذف الدفعة"):
+                                              format_func=lambda x: f"دفعة {x} - {format_currency(next((p['amount'] for p in tp if p['id']==x),0))}",
+                                              key=f"del_single_{sel}")
+                            if st.button("🗑️ حذف الدفعة", key=f"btn_del_single_{sel}"):
                                 delete_temporary_payment(did)
                                 st.toast("تم الحذف", icon="🗑️"); st.rerun()
                         with col_d2:
-                            if st.button("🗑️ حذف كل الدفعات المؤقتة"):
+                            if st.button("🗑️ حذف كل الدفعات المؤقتة", key=f"btn_del_all_{sel}"):
                                 delete_all_temporary_payments(sel)
                                 st.toast("تم حذف كل الدفعات المؤقتة", icon="🗑️"); st.rerun()
                 else:
@@ -1472,23 +1503,23 @@ elif menu == "التقارير":
         if rt == "كشف حساب مستأجر":
             dft = load_tenants()
             if not dft.empty:
-                rf = st.selectbox("المنطقة", ["الكل"] + dft["المنطقة"].dropna().unique().tolist())
+                rf = st.selectbox("المنطقة", ["الكل"] + dft["المنطقة"].dropna().unique().tolist(), key="kr_rf")
                 ft = dft[dft["المنطقة"]==rf] if rf != "الكل" else dft
                 if not ft.empty:
-                    tid = st.selectbox("المستأجر", ft["الرقم"], format_func=lambda x: ft[ft["الرقم"]==x]["الاسم"].iloc[0])
+                    tid = st.selectbox("المستأجر", ft["الرقم"], format_func=lambda x: ft[ft["الرقم"]==x]["الاسم"].iloc[0], key="kr_tid")
                     c1, c2 = st.columns(2)
                     with c1:
                         if cc == "هجري":
-                            hi = st.text_input("من هجري", "01-01-1445")
+                            hi = st.text_input("من هجري", "01-01-1445", key="kr_h1")
                             try: fd = hijri_to_gregorian(hi)
                             except: st.error("خطأ"); st.stop()
-                        else: fd = st.date_input("من", value=date.today().replace(day=1))
+                        else: fd = st.date_input("من", value=date.today().replace(day=1), key="kr_d1")
                     with c2:
                         if cc == "هجري":
-                            hi = st.text_input("إلى هجري", "30-12-1445")
+                            hi = st.text_input("إلى هجري", "30-12-1445", key="kr_h2")
                             try: td = hijri_to_gregorian(hi)
                             except: st.error("خطأ"); st.stop()
-                        else: td = st.date_input("إلى", value=date.today())
+                        else: td = st.date_input("إلى", value=date.today(), key="kr_d2")
                     conn = get_conn(); cur = conn.cursor()
                     tn, tr = cur.execute("SELECT name, region FROM tenants WHERE id=?", (tid,)).fetchone()
                     cr = cur.execute("SELECT c.contract_number FROM contracts c WHERE c.tenant_id=? AND c.status='نشط' LIMIT 1", (tid,)).fetchone()
@@ -1523,22 +1554,22 @@ elif menu == "التقارير":
                             if recs:
                                 pd.DataFrame([(r[0],r[1],r[2],r[3]) for r in recs],
                                              columns=["رقم السند","المبلغ","التاريخ","الطريقة"]).to_excel(wr, sheet_name='سندات', index=False)
-                        st.download_button("تحميل Excel", data=o.getvalue(), file_name=f"kashf_{tn}.xlsx")
+                        st.download_button("تحميل Excel", data=o.getvalue(), file_name=f"kashf_{tn}.xlsx", key=f"dl_kashf_{tid}")
                         ei = f"المنطقة: {tr or '-'} - رقم العقد: {cno}"
                         export_df_to_pdf(dfe, f"كشف حساب {tn}", f"kashf_{tn}.pdf", extra_info=ei)
         elif rt == "دفعات بين تاريخين":
             if cc == "هجري":
                 c1, c2 = st.columns(2)
-                hi1 = c1.text_input("من هجري", "01-01-1445")
-                hi2 = c2.text_input("إلى هجري", "30-12-1445")
+                hi1 = c1.text_input("من هجري", "01-01-1445", key="dd_h1")
+                hi2 = c2.text_input("إلى هجري", "30-12-1445", key="dd_h2")
                 try: fd = hijri_to_gregorian(hi1); td = hijri_to_gregorian(hi2)
                 except: st.error("خطأ"); st.stop()
             else:
                 c1, c2 = st.columns(2)
-                fd = c1.date_input("من", value=date.today().replace(day=1))
-                td = c2.date_input("إلى", value=date.today())
-            tf = st.selectbox("مستأجر", ["الكل"] + load_tenants()["الاسم"].tolist())
-            rf = st.selectbox("المنطقة", ["الكل"] + load_tenants()["المنطقة"].dropna().unique().tolist())
+                fd = c1.date_input("من", value=date.today().replace(day=1), key="dd_d1")
+                td = c2.date_input("إلى", value=date.today(), key="dd_d2")
+            tf = st.selectbox("مستأجر", ["الكل"] + load_tenants()["الاسم"].tolist(), key="dd_tf")
+            rf = st.selectbox("المنطقة", ["الكل"] + load_tenants()["المنطقة"].dropna().unique().tolist(), key="dd_rf")
             conn = get_conn(); cur = conn.cursor()
             q = '''SELECT t.name, p.name, pay.due_date, pay.amount, pay.paid_amount, (pay.amount-pay.paid_amount),
                    pay.status, t.region FROM payments pay JOIN tenants t ON pay.tenant_id=t.id
@@ -1556,18 +1587,18 @@ elif menu == "التقارير":
                 st.write(f"**إجمالي المستحق:** {format_currency(ta)} | **المدفوع:** {format_currency(tp_)} | **المتبقي:** {format_currency(ta-tp_)}")
                 o = io.BytesIO()
                 with pd.ExcelWriter(o, engine='xlsxwriter') as wr: df.to_excel(wr, index=False)
-                st.download_button("Excel", data=o.getvalue(), file_name=f"dues_{fd}_{td}.xlsx")
+                st.download_button("Excel", data=o.getvalue(), file_name=f"dues_{fd}_{td}.xlsx", key="dl_dues")
                 export_df_to_pdf(df, f"مستحقات {fd} - {td}", f"dues_{fd}_{td}.pdf")
             else: st.info("لا مستحقات")
         elif rt == "الإيرادات":
             if cc == "هجري":
                 c1, c2 = st.columns(2)
-                hi1 = c1.text_input("من هجري", "01-01-1445"); hi2 = c2.text_input("إلى هجري", "30-12-1445")
+                hi1 = c1.text_input("من هجري", "01-01-1445", key="rev_h1"); hi2 = c2.text_input("إلى هجري", "30-12-1445", key="rev_h2")
                 try: fd = hijri_to_gregorian(hi1); td = hijri_to_gregorian(hi2)
                 except: st.error("خطأ"); st.stop()
             else:
                 c1, c2 = st.columns(2)
-                fd = c1.date_input("من", value=date.today().replace(day=1)); td = c2.date_input("إلى", value=date.today())
+                fd = c1.date_input("من", value=date.today().replace(day=1), key="rev_d1"); td = c2.date_input("إلى", value=date.today(), key="rev_d2")
             conn = get_conn()
             df = pd.read_sql_query('''SELECT r.receipt_date as 'التاريخ', t.name as 'المستأجر',
                 r.receipt_number as 'رقم السند', r.amount as 'المبلغ', r.payment_method as 'طريقة السداد'
@@ -1580,18 +1611,18 @@ elif menu == "التقارير":
                 st.write(f"**الإجمالي:** {format_currency(df['المبلغ'].sum())}")
                 o = io.BytesIO()
                 with pd.ExcelWriter(o, engine='xlsxwriter') as wr: df.to_excel(wr, index=False)
-                st.download_button("Excel", data=o.getvalue(), file_name=f"rev_{fd}_{td}.xlsx")
+                st.download_button("Excel", data=o.getvalue(), file_name=f"rev_{fd}_{td}.xlsx", key="dl_rev")
                 export_df_to_pdf(df, "الإيرادات", f"rev_{fd}_{td}.pdf")
             else: st.info("لا إيرادات")
         elif rt == "الضرائب":
             if cc == "هجري":
                 c1, c2 = st.columns(2)
-                hi1 = c1.text_input("من هجري", "01-01-1445"); hi2 = c2.text_input("إلى هجري", "30-12-1445")
+                hi1 = c1.text_input("من هجري", "01-01-1445", key="tx_h1"); hi2 = c2.text_input("إلى هجري", "30-12-1445", key="tx_h2")
                 try: fd = hijri_to_gregorian(hi1); td = hijri_to_gregorian(hi2)
                 except: st.error("خطأ"); st.stop()
             else:
                 c1, c2 = st.columns(2)
-                fd = c1.date_input("من", value=date.today().replace(day=1)); td = c2.date_input("إلى", value=date.today())
+                fd = c1.date_input("من", value=date.today().replace(day=1), key="tx_d1"); td = c2.date_input("إلى", value=date.today(), key="tx_d2")
             conn = get_conn()
             df = pd.read_sql_query('''SELECT t.name as 'اسم المستأجر', c.contract_number as 'رقم العقد',
                 c.start_date as 'بداية الفترة', c.end_date as 'نهاية الفترة',
@@ -1618,7 +1649,7 @@ elif menu == "التقارير":
                 st.write(f"**غير شامل:** {format_currency(df['المبلغ غير شامل الضريبة'].sum())}")
                 o = io.BytesIO()
                 with pd.ExcelWriter(o, engine='xlsxwriter') as wr: dfd.to_excel(wr, index=False)
-                st.download_button("Excel", data=o.getvalue(), file_name=f"tax_{fd}_{td}.xlsx")
+                st.download_button("Excel", data=o.getvalue(), file_name=f"tax_{fd}_{td}.xlsx", key="dl_tax")
                 export_tax_pdf(dfd, "تقرير الضرائب", f"tax_{fd}_{td}.pdf", columns_order=sc)
             else: st.info("لا بيانات")
 
@@ -1631,15 +1662,15 @@ elif menu == "المستخدمون":
             dfu = load_users()
             if not dfu.empty:
                 rtl_dataframe(dfu)
-                uid = st.selectbox("اختر مستخدم", dfu["الرقم"], format_func=lambda x: dfu[dfu["الرقم"]==x]["اسم المستخدم"].iloc[0])
+                uid = st.selectbox("اختر مستخدم", dfu["الرقم"], format_func=lambda x: dfu[dfu["الرقم"]==x]["اسم المستخدم"].iloc[0], key="sel_user")
                 if uid:
                     up = load_permissions(uid)
                     st.markdown("### الصلاحيات")
                     np_ = {}
                     for pg in PAGE_KEYS: np_[pg] = st.checkbox(pg, value=up.get(pg, False), key=f"perm_{uid}_{pg}")
-                    if st.button("حفظ الصلاحيات"):
+                    if st.button("حفظ الصلاحيات", key=f"btn_save_perm_{uid}"):
                         save_permissions(uid, np_); st.toast("تم الحفظ", icon="✅"); st.rerun()
-                    if st.button("حذف المستخدم"):
+                    if st.button("حذف المستخدم", key=f"btn_del_user_{uid}"):
                         delete_user(uid); st.toast("تم الحذف", icon="🗑️"); st.rerun()
                     if current_role == 'مدير':
                         with st.expander("تغيير كلمة المرور"):
@@ -1696,19 +1727,19 @@ elif menu == "نسخ احتياطي":
             st.markdown("### تنزيل نسخة")
             try:
                 with open("rentals.db", "rb") as f: db = f.read()
-                st.download_button("تحميل قاعدة البيانات", data=db, file_name=f"backup_{date.today()}.db", mime="application/octet-stream")
+                st.download_button("تحميل قاعدة البيانات", data=db, file_name=f"backup_{date.today()}.db", mime="application/octet-stream", key="dl_db")
             except FileNotFoundError: st.warning("لا توجد قاعدة بيانات")
         with c2:
             st.markdown("### استعادة نسخة")
-            uf = st.file_uploader("اختر ملف", type=["db","sqlite"])
-            if uf and st.button("استعادة"):
+            uf = st.file_uploader("اختر ملف", type=["db","sqlite"], key="restore_up")
+            if uf and st.button("استعادة", key="btn_restore"):
                 with open("rentals.db", "wb") as f: f.write(uf.read())
                 st.cache_data.clear(); st.toast("تمت الاستعادة", icon="✅"); st.rerun()
         st.markdown("---")
         st.subheader("📱 النسخ عبر تيليجرام")
         if not telegram_bot_token or not telegram_chat_id: st.warning("أدخل بيانات تيليجرام في الإعدادات")
         else:
-            if st.button("⬆️ رفع"):
+            if st.button("⬆️ رفع", key="btn_tg_up"):
                 try:
                     with open("rentals.db", "rb") as f:
                         resp = requests.post(f"https://api.telegram.org/bot{telegram_bot_token}/sendDocument",
@@ -1719,7 +1750,7 @@ elif menu == "نسخ احتياطي":
                         if fid: save_setting('telegram_file_id', fid); st.toast("تم الرفع", icon="✅")
                     else: st.error(resp.text)
                 except Exception as e: st.error(str(e))
-            if st.button("⬇️ استعادة"):
+            if st.button("⬇️ استعادة", key="btn_tg_down"):
                 if not telegram_file_id: st.error("لا يوجد File ID")
                 else:
                     try:
