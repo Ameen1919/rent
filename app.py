@@ -56,7 +56,7 @@ def format_currency(value):
 def rtl_dataframe(df, key=None, **kwargs):
     df_display = df.copy()
     numeric_cols = df_display.select_dtypes(include=[np.number]).columns.tolist()
-    date_cols = [c for c in df_display.columns if 'تاريخ' in c or 'date' in c.lower() or 'بداية' in c or 'نهاية' in c]
+    date_cols = [c for c in df_display.columns if 'تاريخ' in c or 'date' in c.lower() or 'بداية' in c or 'نهاية' in c or 'استحقاق' in c]
     number_like = [c for c in df_display.columns if any(kw in c for kw in ['المبلغ','المدفوع','المتبقي','الضريبة','إيجار','التأمين','الرقم','نسبة'])]
     ltr_cols = list(set(numeric_cols + date_cols + number_like))
     rtl_cols = [c for c in df_display.columns if c not in ltr_cols]
@@ -458,11 +458,6 @@ with col_down:
 st.sidebar.markdown("---")
 menu = st.sidebar.radio("القائمة الرئيسية", PAGE_KEYS)
 
-def add_note(tid, txt, pri='عادية', alert=0):
-    conn = get_conn(); cur = conn.cursor()
-    cur.execute('INSERT INTO alerts (tenant_id, alert_text, alert_date) VALUES (?,?,?)', (tid, txt, date.today().isoformat()))
-    conn.commit(); conn.close(); st.cache_data.clear()
-
 def generate_receipt_number(): return f"RCP-{int(time.time())}"
 
 def generate_contract_number():
@@ -554,6 +549,27 @@ def create_payment_schedule(cid, tid, sd, ed, ra, im):
     conn.commit(); conn.close()
     return cnt
 
+def create_temporary_payment_schedule(cid, tid, sd, ed, total_amount, interval_months, note=""):
+    """إنشاء جدول دفعات مؤقتة بنفس منطق العقد العادي.
+    total_amount = إجمالي المبلغ للسنة الكاملة (مثلاً 69000)
+    interval_months = كل كم شهر (مثلاً 6)
+    الدفعة الواحدة = total_amount * interval_months / 12
+    المواعيد: sd, sd+step, sd+2*step ... حتى ed
+    """
+    step = relativedelta(months=interval_months)
+    current = sd
+    payment_amount = total_amount * interval_months / 12.0
+    conn = get_conn(); cur = conn.cursor()
+    cnt = 0
+    while current <= ed:
+        cur.execute('''INSERT INTO payments (contract_id, tenant_id, due_date, amount, status, notes, is_temporary, temporary_note)
+                       VALUES (?, ?, ?, ?, 'مستحق', ?, 1, ?)''',
+                    (cid, tid, current.isoformat(), payment_amount, note, note))
+        current += step
+        cnt += 1
+    conn.commit(); conn.close()
+    return cnt
+
 def get_unread_alerts(tid=None):
     conn = get_conn(); cur = conn.cursor()
     if tid:
@@ -566,7 +582,7 @@ def hijri_to_gregorian(hs):
     d, m, y = map(int, hs.split('-')); g = convert.Hijri(y, m, d).to_gregorian()
     return date(g.year, g.month, g.day)
 
-def add_temporary_payment(cid, tid, dd, amt, note=""):
+def add_single_temporary_payment(cid, tid, dd, amt, note=""):
     conn = get_conn(); cur = conn.cursor()
     cur.execute('''INSERT INTO payments (contract_id, tenant_id, due_date, amount, status, notes, is_temporary, temporary_note)
                    VALUES (?,?,?,?, 'مستحق', ?, 1, ?)''', (cid, tid, dd.isoformat(), amt, note, note))
@@ -582,12 +598,20 @@ def delete_temporary_payment(pid):
     cur.execute("DELETE FROM payments WHERE id=? AND is_temporary=1", (pid,))
     conn.commit(); conn.close(); st.cache_data.clear()
 
+def delete_all_temporary_payments(cid):
+    conn = get_conn(); cur = conn.cursor()
+    cur.execute("DELETE FROM payments WHERE contract_id=? AND is_temporary=1", (cid,))
+    conn.commit(); conn.close(); st.cache_data.clear()
+
 def get_all_expired_contracts():
     conn = get_conn(); cur = conn.cursor()
     cur.execute('''SELECT c.id, c.contract_number, t.name as tenant_name, c.end_date, c.tenant_id,
-                   p.name as prop_name, c.rent_amount FROM contracts c
-                   JOIN tenants t ON c.tenant_id = t.id JOIN properties p ON c.property_id = p.id
-                   WHERE c.end_date < date('now') AND c.tenant_id NOT IN (
+                   p.name as prop_name, c.rent_amount, c.interval_months
+                   FROM contracts c
+                   JOIN tenants t ON c.tenant_id = t.id
+                   JOIN properties p ON c.property_id = p.id
+                   WHERE c.end_date < date('now')
+                   AND c.tenant_id NOT IN (
                        SELECT tenant_id FROM contracts WHERE status='نشط' AND end_date >= date('now'))
                    ORDER BY c.end_date DESC''')
     r = cur.fetchall(); conn.close(); return [dict(x) for x in r]
@@ -1334,40 +1358,110 @@ elif menu == "عقود منتهية":
     if not has_permission(current_user_id, "عقود منتهية"): st.error("لا تملك صلاحية")
     else:
         exp = get_all_expired_contracts()
-        if not exp: st.info("لا توجد عقود منتهية بدون تجديد")
+        if not exp:
+            st.info("لا توجد عقود منتهية بدون تجديد")
         else:
             dfe = pd.DataFrame(exp)
             dfe = dfe.rename(columns={'id':'رقم_داخلي','contract_number':'رقم العقد','tenant_name':'المستأجر',
-                                       'end_date':'تاريخ الانتهاء','prop_name':'العقار','rent_amount':'الإيجار'})
-            rtl_dataframe(dfe[['رقم العقد','المستأجر','العقار','تاريخ الانتهاء','الإيجار']])
+                                       'end_date':'تاريخ الانتهاء','prop_name':'العقار','rent_amount':'الإيجار',
+                                       'interval_months':'الدورية'})
+            rtl_dataframe(dfe[['رقم العقد','المستأجر','العقار','تاريخ الانتهاء','الإيجار','الدورية']])
             co = {e['id']: f"{e['contract_number']} - {e['tenant_name']} - انتهى {e['end_date']}" for e in exp}
             sel = st.selectbox("اختر عقد", options=list(co.keys()), format_func=lambda x: co[x])
             if sel:
                 ci = next(e for e in exp if e['id'] == sel)
-                st.markdown(f"### دفعات مؤقتة: {ci['contract_number']}")
-                st.info(f"المستأجر: **{ci['tenant_name']}** | العقار: **{ci['prop_name']}**")
-                with st.form("add_temp_f"):
-                    st.markdown("#### إضافة دفعة مؤقتة")
-                    c1, c2 = st.columns(2)
-                    dd = c1.date_input("الاستحقاق", value=date.today())
-                    am = c2.number_input("المبلغ", min_value=0.0, step=100.0, value=float(ci['rent_amount'] or 0))
-                    nt = st.text_input("ملاحظة", value="امتداد حتى تجديد العقد")
-                    if st.form_submit_button("➕ إضافة"):
-                        add_temporary_payment(sel, ci['tenant_id'], dd, am, nt)
-                        st.toast("تمت الإضافة", icon="✅"); st.rerun()
+                st.markdown(f"### العقد: {ci['contract_number']}")
+                st.info(f"**المستأجر:** {ci['tenant_name']} | **العقار:** {ci['prop_name']} | "
+                        f"**الإيجار السنوي السابق:** {format_currency(ci['rent_amount'])} | "
+                        f"**الدورية السابقة:** كل {ci['interval_months']} شهر")
+
+                st.markdown("---")
+                # خياران: جدول دفعات مؤقت (مثل العقد) أو دفعة واحدة
+                mode = st.radio("طريقة الإضافة", ["📋 جدول دفعات مؤقت (مثل العقد)", "➕ دفعة واحدة فقط"], horizontal=True)
+
+                if mode == "📋 جدول دفعات مؤقت (مثل العقد)":
+                    st.markdown("#### توليد جدول دفعات مؤقت بنفس منطق العقد")
+                    st.caption("مثال: الإيجار السنوي 69,000 يدفع كل 6 شهور → 34,500 في كل دفعة، في نفس المواعيد.")
+                    with st.form("temp_schedule_f"):
+                        c1, c2 = st.columns(2)
+                        with c1:
+                            sd = st.date_input("من تاريخ (بداية الفترة المؤقتة)", value=date.today())
+                        with c2:
+                            ed = st.date_input("إلى تاريخ (نهاية الفترة المؤقتة)",
+                                               value=date.today() + relativedelta(years=1))
+                        c3, c4 = st.columns(2)
+                        with c3:
+                            total_annual = st.number_input("إجمالي الإيجار السنوي",
+                                                          min_value=0.0, step=1000.0,
+                                                          value=float(ci['rent_amount'] or 0),
+                                                          help="مثلاً 69000")
+                        with c4:
+                            interval_months = st.number_input("دورية السداد (شهور)",
+                                                             min_value=1,
+                                                             value=int(ci['interval_months'] or 6),
+                                                             help="مثلاً 6 تعني كل ستة أشهر")
+                        note = st.text_input("ملاحظة عامة على الدفعات",
+                                            value="فترة مؤقتة حتى تجديد العقد")
+                        # معاينة الدفعات قبل الحفظ
+                        if total_annual > 0 and interval_months > 0 and sd < ed:
+                            payment_amount = total_annual * interval_months / 12.0
+                            st.info(f"سيتم إنشاء دفعات بقيمة **{format_currency(payment_amount)}** لكل دفعة "
+                                    f"(كل {interval_months} شهر) بدءاً من {sd} حتى {ed}")
+                        if st.form_submit_button("📋 توليد الجدول"):
+                            if sd >= ed:
+                                st.error("تاريخ النهاية يجب أن يكون بعد البداية")
+                            elif total_annual <= 0:
+                                st.error("المبلغ يجب أن يكون أكبر من صفر")
+                            else:
+                                cnt = create_temporary_payment_schedule(sel, ci['tenant_id'], sd, ed,
+                                                                        total_annual, interval_months, note)
+                                st.toast(f"تم توليد {cnt} دفعة مؤقتة", icon="✅")
+                                st.rerun()
+
+                else:
+                    st.markdown("#### إضافة دفعة واحدة يدوياً")
+                    with st.form("temp_single_f"):
+                        c1, c2 = st.columns(2)
+                        with c1:
+                            dd = st.date_input("تاريخ الاستحقاق", value=date.today())
+                        with c2:
+                            am = st.number_input("المبلغ", min_value=0.0, step=100.0,
+                                                value=float(ci['rent_amount'] or 0))
+                        nt = st.text_input("ملاحظة", value="دفعة مؤقتة")
+                        if st.form_submit_button("➕ إضافة دفعة"):
+                            if am <= 0:
+                                st.error("المبلغ > 0")
+                            else:
+                                add_single_temporary_payment(sel, ci['tenant_id'], dd, am, nt)
+                                st.toast("تمت الإضافة", icon="✅"); st.rerun()
+
+                st.markdown("---")
                 tp = get_temporary_payments(sel)
                 if tp:
-                    st.markdown("#### الدفعات المؤقتة الحالية")
+                    st.markdown(f"#### الدفعات المؤقتة الحالية ({len(tp)} دفعة)")
                     dft = pd.DataFrame(tp)
                     show = ['id','due_date','amount','paid_amount','status','temporary_note']
                     dft_s = dft[[c for c in show if c in dft.columns]]
                     dft_s = dft_s.rename(columns={'id':'الرقم','due_date':'الاستحقاق','amount':'المبلغ',
                                                    'paid_amount':'المدفوع','status':'الحالة','temporary_note':'ملاحظة'})
                     rtl_dataframe(dft_s)
-                    did = st.selectbox("حذف دفعة", [p['id'] for p in tp], format_func=lambda x: f"دفعة {x}")
-                    if st.button("🗑️ حذف"):
-                        delete_temporary_payment(did); st.toast("تم الحذف", icon="🗑️"); st.rerun()
-                else: st.info("لا دفعات مؤقتة")
+                    tot = dft['amount'].sum()
+                    st.write(f"**إجمالي الدفعات المؤقتة:** {format_currency(tot)}")
+                    if current_role == 'مدير':
+                        col_d1, col_d2 = st.columns(2)
+                        with col_d1:
+                            did = st.selectbox("حذف دفعة واحدة",
+                                              [p['id'] for p in tp],
+                                              format_func=lambda x: f"دفعة {x} - {format_currency(next((p['amount'] for p in tp if p['id']==x),0))}")
+                            if st.button("🗑️ حذف الدفعة"):
+                                delete_temporary_payment(did)
+                                st.toast("تم الحذف", icon="🗑️"); st.rerun()
+                        with col_d2:
+                            if st.button("🗑️ حذف كل الدفعات المؤقتة"):
+                                delete_all_temporary_payments(sel)
+                                st.toast("تم حذف كل الدفعات المؤقتة", icon="🗑️"); st.rerun()
+                else:
+                    st.info("لا دفعات مؤقتة على هذا العقد بعد")
 
 elif menu == "التقارير":
     st.subheader("📈 التقارير")
