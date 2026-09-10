@@ -106,6 +106,26 @@ def parse_date_safe(v, default=None):
         try: return datetime.fromisoformat(str(v)).date()
         except: return default or date.today()
 
+def wrap_text_for_pdf(text, max_chars_per_line):
+    """تقسيم النص العربي إلى أسطر حسب عدد الأحرف مع الحفاظ على الكلمات"""
+    s = str(text)
+    if len(s) <= max_chars_per_line:
+        return [s]
+    lines = []
+    remaining = s
+    while len(remaining) > max_chars_per_line:
+        chunk = remaining[:max_chars_per_line]
+        space_idx = chunk.rfind(' ')
+        if space_idx > max_chars_per_line // 3:
+            lines.append(remaining[:space_idx].strip())
+            remaining = remaining[space_idx:].strip()
+        else:
+            lines.append(chunk)
+            remaining = remaining[max_chars_per_line:]
+    if remaining:
+        lines.append(remaining)
+    return lines
+
 def export_df_to_pdf(df, title, file_name, columns_order=None, extra_info=None):
     if columns_order: df = df[columns_order]
     else: df = df.copy()
@@ -127,63 +147,127 @@ def export_df_to_pdf(df, title, file_name, columns_order=None, extra_info=None):
         c.setFillColor(colors.black); c.setFont(fn, 12)
         c.drawCentredString(w/2, y_extra, reshape_arabic_text(extra_info))
         y_extra -= 20
+
     cols = list(df.columns); headers = ["م"] + cols
+
     widths = []
-    for col in headers:
-        if col == "م": widths.append(30)
+    for idx, col in enumerate(headers):
+        if col == "م":
+            widths.append(30); continue
+        max_len = len(reshape_arabic_text(str(col)))
+        for v in df[col].tolist():
+            s = format_currency(v) if isinstance(v, (int, float)) and not pd.isna(v) else (str(v) if not pd.isna(v) else "")
+            max_len = max(max_len, len(reshape_arabic_text(s)))
+
+        if col in ['المبلغ','المدفوع','المتبقي','المبلغ شامل الضريبة','مبلغ الضريبة','المبلغ غير شامل الضريبة','الإيجار السنوي']:
+            widths.append(75)
+        elif col in ['تاريخ الاستحقاق','تاريخ السداد','بداية الفترة','نهاية الفترة']:
+            widths.append(80)
+        elif col in ['المستأجر','اسم المستأجر']:
+            widths.append(130)
+        elif col in ['العقار','اسم العقار']:
+            widths.append(110)
+        elif col in ['المنطقة']:
+            widths.append(75)
+        elif col in ['الحالة']:
+            widths.append(60)
         else:
-            if col in ['المبلغ','المدفوع','المتبقي','المبلغ شامل الضريبة','مبلغ الضريبة','المبلغ غير شامل الضريبة']: widths.append(80)
-            elif col in ['تاريخ الاستحقاق','تاريخ السداد','بداية الفترة','نهاية الفترة']: widths.append(100)
-            else: widths.append(max(len(reshape_arabic_text(col))*4, 80))
+            widths.append(min(max(max_len * 6 + 15, 65), 120))
+
     tw = sum(widths)
-    max_w = w - 60
+    max_w = w - 40
     if tw > max_w:
-        sf = max_w / tw; widths = [x*sf for x in widths]; tw = max_w
+        sf = max_w / tw
+        widths = [x * sf for x in widths]
+        tw = max_w
     xs = (w - tw) / 2
-    if xs < 30: xs = 30
+    if xs < 20: xs = 20
+
     y = y_extra - 20 if extra_info else h - 60
+
     c.setFont(fn, 8); c.setFillColor(colors.HexColor("#f0f0f0"))
-    c.rect(xs, y-12, tw, 20, fill=1, stroke=0)
+    c.rect(xs, y-15, tw, 25, fill=1, stroke=0)
     c.setFillColor(colors.black)
     xc = xs + tw
     for i, hd in enumerate(headers):
         cw = widths[i]; xr = xc; xl = xc - cw
-        c.drawCentredString((xl+xr)/2, y, reshape_arabic_text(hd)); xc -= cw
-    y -= 25; c.setFillColor(colors.white); sn = 1
+        c.drawCentredString((xl+xr)/2, y-3, reshape_arabic_text(hd)); xc -= cw
+    y -= 30
+    sn = 1
+    line_height = 11
+
     for _, row in df.iterrows():
-        if y < 50:
-            c.showPage(); c.setFont(fn, 8); y = h - 50
-            c.setFillColor(colors.HexColor("#f0f0f0")); c.rect(xs, y-12, tw, 20, fill=1, stroke=0)
-            c.setFillColor(colors.black); xc = xs + tw
+        row_lines = []
+        for col in cols:
+            v = row[col]
+            vs = format_currency(v) if isinstance(v, (int, float)) and not pd.isna(v) else (str(v) if not pd.isna(v) else "")
+            col_idx = cols.index(col) + 1
+            cw = widths[col_idx]
+            max_chars = max(int(cw / 7), 5)
+            lines = wrap_text_for_pdf(vs, max_chars)
+            row_lines.append(lines)
+
+        max_lines = max((len(lines) for lines in row_lines), default=1)
+        row_height = max_lines * line_height + 6
+
+        if y - row_height < 40:
+            c.showPage()
+            c.setFont(fn, 8)
+            y = h - 50
+            c.setFillColor(colors.HexColor("#f0f0f0"))
+            c.rect(xs, y-15, tw, 25, fill=1, stroke=0)
+            c.setFillColor(colors.black)
+            xc = xs + tw
             for i, hd in enumerate(headers):
                 cw = widths[i]; xr = xc; xl = xc - cw
-                c.drawCentredString((xl+xr)/2, y, reshape_arabic_text(hd)); xc -= cw
-            y -= 25
-        c.setFillColor(colors.white); c.rect(xs, y-5, tw, 15, fill=1, stroke=0); c.setFillColor(colors.black)
+                c.drawCentredString((xl+xr)/2, y-3, reshape_arabic_text(hd)); xc -= cw
+            y -= 30
+
+        c.setFillColor(colors.white)
+        c.rect(xs, y - row_height + 5, tw, row_height, fill=1, stroke=0)
+        c.setFillColor(colors.black)
+
         cw = widths[0]; xr = xs + tw; xl = xr - cw
-        c.drawCentredString((xl+xr)/2, y, str(sn)); sn += 1
+        center_y = y - (row_height / 2) + 3
+        c.drawCentredString((xl+xr)/2, center_y, str(sn))
+        sn += 1
         xc = xr - cw
+
         for i, col in enumerate(cols, 1):
             cw = widths[i]; xr = xc; xl = xc - cw
-            v = row[col]
-            vs = format_currency(v) if isinstance(v,(int,float)) and not pd.isna(v) else (str(v) if not pd.isna(v) else "")
-            c.drawRightString(xr - 5, y, reshape_arabic_text(vs)); xc -= cw
+            lines = row_lines[i-1]
+            start_y = y - 3
+            for li, line in enumerate(lines):
+                c.drawRightString(xr - 5, start_y - li * line_height, reshape_arabic_text(line))
+            xc -= cw
+
         c.setStrokeColor(colors.grey); c.setLineWidth(0.5)
-        c.line(xs, y+10, xs+tw, y+10); c.line(xs, y-5, xs+tw, y-5)
+        c.line(xs, y+5, xs+tw, y+5)
+        c.line(xs, y - row_height + 5, xs+tw, y - row_height + 5)
         xc = xs + tw
         for i in range(len(headers)):
-            c.line(xc, y+10, xc, y-5); xc -= widths[i]
-        c.line(xs, y+10, xs, y-5); y -= 15
-    c.line(xs, y+5, xs+tw, y+5); y -= 5
-    c.setFillColor(colors.HexColor("#e8f0fe")); c.rect(xs, y-5, tw, 15, fill=1, stroke=0); c.setFillColor(colors.black)
+            c.line(xc, y+5, xc, y - row_height + 5)
+            xc -= widths[i]
+        c.line(xs, y+5, xs, y - row_height + 5)
+
+        y -= row_height
+
+    c.line(xs, y+5, xs+tw, y+5)
+    y -= 5
+    c.setFillColor(colors.HexColor("#e8f0fe"))
+    c.rect(xs, y-15, tw, 22, fill=1, stroke=0)
+    c.setFillColor(colors.black)
     cw = widths[0]; xr = xs + tw; xl = xr - cw
-    c.drawCentredString((xl+xr)/2, y, reshape_arabic_text("الإجمالي"))
+    c.drawCentredString((xl+xr)/2, y-7, reshape_arabic_text("الإجمالي"))
     xc = xr - cw
     for i, col in enumerate(cols, 1):
         cw = widths[i]; xr = xc; xl = xc - cw
-        try: c.drawRightString(xr-5, y, format_currency(df_num[col].sum()))
+        try:
+            total_val = df_num[col].sum()
+            c.drawRightString(xr-5, y-7, format_currency(total_val))
         except: pass
         xc -= cw
+
     c.save(); buf.seek(0)
     st.download_button("تحميل PDF", data=buf, file_name=file_name, mime="application/pdf")
 
@@ -204,48 +288,64 @@ def export_tax_pdf(df, title, file_name, columns_order=None):
     widths = []
     for col in headers:
         if col == "م": widths.append(25)
-        elif col in ['المبلغ شامل الضريبة','مبلغ الضريبة','المبلغ غير شامل الضريبة']: widths.append(75)
-        elif col == 'نسبة الضريبة': widths.append(50)
-        elif col in ['بداية الفترة','نهاية الفترة']: widths.append(85)
-        elif col == 'اسم المستأجر': widths.append(100)
-        elif col == 'رقم العقد': widths.append(80)
-        elif col == 'طريقة الدفع': widths.append(70)
-        else: widths.append(max(len(reshape_arabic_text(col))*3.5, 70))
+        elif col in ['المبلغ شامل الضريبة','مبلغ الضريبة','المبلغ غير شامل الضريبة']: widths.append(85)
+        elif col == 'نسبة الضريبة': widths.append(55)
+        elif col in ['بداية الفترة','نهاية الفترة']: widths.append(90)
+        elif col in ['اسم المستأجر','المستأجر']: widths.append(140)
+        elif col in ['رقم العقد']: widths.append(85)
+        elif col == 'طريقة الدفع': widths.append(80)
+        else: widths.append(max(len(reshape_arabic_text(col))*5, 70))
     tw = sum(widths); max_w = w - 40
     if tw > max_w:
         sf = max_w / tw; widths = [x*sf for x in widths]; tw = max_w
     xs = (w - tw) / 2
     if xs < 20: xs = 20
-    y = h - 60; c.setFont(fn, 7); c.setFillColor(colors.HexColor("#f0f0f0"))
+    y = h - 60
+    c.setFont(fn, 7); c.setFillColor(colors.HexColor("#f0f0f0"))
     c.rect(xs, y-18, tw, 28, fill=1, stroke=0); c.setFillColor(colors.black)
     xc = xs + tw
     for i, hd in enumerate(headers):
         cw = widths[i]; xr = xc; xl = xc - cw; xm = (xl+xr)/2
-        c.drawCentredString(xm, y-2, reshape_arabic_text(hd)); xc -= cw
+        c.drawCentredString(xm, y-3, reshape_arabic_text(hd)); xc -= cw
     y -= 30; c.setFont(fn, 8); sn = 1
+    line_height = 10
     for _, row in df.iterrows():
-        if y < 50:
+        row_lines = []
+        for col in cols:
+            v = row[col]
+            vs = format_currency(v) if isinstance(v, (int, float)) and not pd.isna(v) else (str(v) if not pd.isna(v) else "")
+            col_idx = cols.index(col) + 1
+            cw = widths[col_idx]
+            max_chars = max(int(cw / 6.5), 5)
+            row_lines.append(wrap_text_for_pdf(vs, max_chars))
+        max_lines = max((len(l) for l in row_lines), default=1)
+        row_height = max_lines * line_height + 5
+        if y - row_height < 40:
             c.showPage(); c.setFont(fn, 7); y = h - 50
             c.setFillColor(colors.HexColor("#f0f0f0")); c.rect(xs, y-18, tw, 28, fill=1, stroke=0)
             c.setFillColor(colors.black); xc = xs + tw
             for i, hd in enumerate(headers):
                 cw = widths[i]; xr = xc; xl = xc - cw; xm = (xl+xr)/2
-                c.drawCentredString(xm, y-2, reshape_arabic_text(hd)); xc -= cw
+                c.drawCentredString(xm, y-3, reshape_arabic_text(hd)); xc -= cw
             y -= 30; c.setFont(fn, 8)
-        c.setFillColor(colors.white); c.rect(xs, y-5, tw, 18, fill=1, stroke=0); c.setFillColor(colors.black)
+        c.setFillColor(colors.white)
+        c.rect(xs, y - row_height + 5, tw, row_height, fill=1, stroke=0)
+        c.setFillColor(colors.black)
         cw = widths[0]; xr = xs + tw; xl = xr - cw
-        c.drawCentredString((xl+xr)/2, y, str(sn)); sn += 1
+        c.drawCentredString((xl+xr)/2, y - row_height/2 + 2, str(sn)); sn += 1
         xc = xr - cw
         for i, col in enumerate(cols, 1):
             cw = widths[i]; xr = xc; xl = xc - cw
-            v = row[col]
-            vs = format_currency(v) if isinstance(v,(int,float)) and not pd.isna(v) else (str(v) if not pd.isna(v) else "")
-            c.drawRightString(xr-5, y, reshape_arabic_text(vs)); xc -= cw
+            for li, line in enumerate(row_lines[i-1]):
+                c.drawRightString(xr-4, y - 3 - li*line_height, reshape_arabic_text(line))
+            xc -= cw
         c.setStrokeColor(colors.grey); c.setLineWidth(0.5)
-        c.line(xs, y+12, xs+tw, y+12); c.line(xs, y-5, xs+tw, y-5)
+        c.line(xs, y+5, xs+tw, y+5)
+        c.line(xs, y-row_height+5, xs+tw, y-row_height+5)
         xc = xs + tw
-        for i in range(len(headers)): c.line(xc, y+12, xc, y-5); xc -= widths[i]
-        c.line(xs, y+12, xs, y-5); y -= 18
+        for i in range(len(headers)): c.line(xc, y+5, xc, y-row_height+5); xc -= widths[i]
+        c.line(xs, y+5, xs, y-row_height+5)
+        y -= row_height
     c.save(); buf.seek(0)
     st.download_button("تحميل PDF", data=buf, file_name=file_name, mime="application/pdf")
 
@@ -992,7 +1092,6 @@ elif menu == "إدارة البيانات":
                                         conn.close()
                                         delete_tenant(tid)
                                         st.toast("تم الحذف", icon="🗑️")
-                                        # إعادة تعيين الاختيار لتجنب مشكلة None
                                         if 'sel_tenant_edit' in st.session_state: del st.session_state['sel_tenant_edit']
                                         st.rerun()
                                     if hc <= 0: pass
@@ -1012,7 +1111,6 @@ elif menu == "إدارة البيانات":
                                             conn.commit(); conn.close(); st.cache_data.clear()
                                             st.toast("تم التحديث", icon="✅"); st.session_state['edit_tenant_id'] = None; st.rerun()
                         else:
-                            # المستأجر لم يعد موجود (تم حذفه) - تجاهل
                             pass
                 else: st.info("لا نتائج")
         with t2:
@@ -1310,7 +1408,6 @@ elif menu == "الدفعات":
             if current_role == 'مدير':
                 dfp = load_payments()
                 if not dfp.empty:
-                    # ===== فلاتر الدفعات =====
                     st.markdown("### 🔎 فلاتر البحث")
                     f1, f2, f3 = st.columns(3)
                     with f1:
@@ -1335,7 +1432,6 @@ elif menu == "الدفعات":
                         st.info("لا نتائج مطابقة للفلاتر")
                     else:
                         st.markdown(f"**عدد النتائج:** {len(dfp_f)}")
-                        # جدول معروض بمعرفات أوضح
                         dfp_show = dfp_f[["الرقم","المستأجر","العقار","تاريخ الاستحقاق","المبلغ","المدفوع","المتبقي","الحالة","تاريخ السداد"]].copy()
                         rtl_dataframe(dfp_show, key="payments_edit_table")
 
