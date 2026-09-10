@@ -107,7 +107,6 @@ def parse_date_safe(v, default=None):
         except: return default or date.today()
 
 def wrap_text_for_pdf(text, max_chars_per_line):
-    """تقسيم النص العربي إلى أسطر حسب عدد الأحرف مع الحفاظ على الكلمات"""
     s = str(text)
     if len(s) <= max_chars_per_line:
         return [s]
@@ -126,7 +125,8 @@ def wrap_text_for_pdf(text, max_chars_per_line):
         lines.append(remaining)
     return lines
 
-def export_df_to_pdf(df, title, file_name, columns_order=None, extra_info=None):
+def export_df_to_pdf(df, title, file_name, columns_order=None, extra_info=None, landscape_mode=False):
+    """تصدير DataFrame إلى PDF مع دعم الطباعة الأفقية (Landscape) والعمودية (Portrait)"""
     if columns_order: df = df[columns_order]
     else: df = df.copy()
     df_num = df.copy()
@@ -134,8 +134,9 @@ def export_df_to_pdf(df, title, file_name, columns_order=None, extra_info=None):
         try: df_num[c] = df_num[c].apply(parse_currency)
         except: pass
     buf = io.BytesIO()
-    c = canvas.Canvas(buf, pagesize=A4)
-    w, h = A4
+    pagesize = landscape(A4) if landscape_mode else A4
+    c = canvas.Canvas(buf, pagesize=pagesize)
+    w, h = pagesize
     fn = setup_arabic_font()
     c.setFont(fn, 10)
     c.setFillColor(colors.HexColor("#4A90E2"))
@@ -160,19 +161,26 @@ def export_df_to_pdf(df, title, file_name, columns_order=None, extra_info=None):
             max_len = max(max_len, len(reshape_arabic_text(s)))
 
         if col in ['المبلغ','المدفوع','المتبقي','المبلغ شامل الضريبة','مبلغ الضريبة','المبلغ غير شامل الضريبة','الإيجار السنوي']:
-            widths.append(75)
-        elif col in ['تاريخ الاستحقاق','تاريخ السداد','بداية الفترة','نهاية الفترة']:
-            widths.append(80)
+            widths.append(85)
+        elif col in ['تاريخ الاستحقاق','تاريخ السداد']:
+            # تاريخ بصيغة YYYY-MM-DD يحتاج ~95 نقطة على الأقل
+            widths.append(95)
+        elif col in ['بداية الفترة','نهاية الفترة']:
+            widths.append(95)
         elif col in ['المستأجر','اسم المستأجر']:
-            widths.append(130)
+            widths.append(140)
         elif col in ['العقار','اسم العقار']:
-            widths.append(110)
+            widths.append(120)
         elif col in ['المنطقة']:
-            widths.append(75)
+            widths.append(80)
         elif col in ['الحالة']:
-            widths.append(60)
+            widths.append(65)
+        elif col in ['رقم السند','رقم العقد']:
+            widths.append(90)
+        elif col in ['طريقة الدفع','طريقة السداد']:
+            widths.append(85)
         else:
-            widths.append(min(max(max_len * 6 + 15, 65), 120))
+            widths.append(min(max(max_len * 6 + 15, 65), 130))
 
     tw = sum(widths)
     max_w = w - 40
@@ -203,7 +211,11 @@ def export_df_to_pdf(df, title, file_name, columns_order=None, extra_info=None):
             vs = format_currency(v) if isinstance(v, (int, float)) and not pd.isna(v) else (str(v) if not pd.isna(v) else "")
             col_idx = cols.index(col) + 1
             cw = widths[col_idx]
-            max_chars = max(int(cw / 7), 5)
+            # التواريخ لا تُقسم أبداً على سطرين، نستخدم مساحة أكبر
+            if col in ['تاريخ الاستحقاق','تاريخ السداد','بداية الفترة','نهاية الفترة']:
+                max_chars = 20  # لا تقسيم للتواريخ
+            else:
+                max_chars = max(int(cw / 7), 5)
             lines = wrap_text_for_pdf(vs, max_chars)
             row_lines.append(lines)
 
@@ -269,17 +281,19 @@ def export_df_to_pdf(df, title, file_name, columns_order=None, extra_info=None):
         xc -= cw
 
     c.save(); buf.seek(0)
-    st.download_button("تحميل PDF", data=buf, file_name=file_name, mime="application/pdf")
+    orientation_label = "أفقي" if landscape_mode else "عمودي"
+    st.download_button(f"تحميل PDF ({orientation_label})", data=buf, file_name=file_name, mime="application/pdf")
 
-def export_tax_pdf(df, title, file_name, columns_order=None):
+def export_tax_pdf(df, title, file_name, columns_order=None, landscape_mode=True):
     if columns_order: df = df[columns_order]
     else: df = df.copy()
     df_num = df.copy()
     for c in ['المبلغ شامل الضريبة','مبلغ الضريبة','المبلغ غير شامل الضريبة']:
         if c in df_num.columns: df_num[c] = df_num[c].apply(parse_currency)
     buf = io.BytesIO()
-    c = canvas.Canvas(buf, pagesize=landscape(A4))
-    w, h = landscape(A4)
+    pagesize = landscape(A4) if landscape_mode else A4
+    c = canvas.Canvas(buf, pagesize=pagesize)
+    w, h = pagesize
     fn = setup_arabic_font()
     c.setFont(fn, 10); c.setFillColor(colors.HexColor("#4A90E2"))
     c.rect(0, h-30, w, 30, fill=1, stroke=0); c.setFillColor(colors.white)
@@ -288,13 +302,13 @@ def export_tax_pdf(df, title, file_name, columns_order=None):
     widths = []
     for col in headers:
         if col == "م": widths.append(25)
-        elif col in ['المبلغ شامل الضريبة','مبلغ الضريبة','المبلغ غير شامل الضريبة']: widths.append(85)
-        elif col == 'نسبة الضريبة': widths.append(55)
-        elif col in ['بداية الفترة','نهاية الفترة']: widths.append(90)
+        elif col in ['المبلغ شامل الضريبة','مبلغ الضريبة','المبلغ غير شامل الضريبة']: widths.append(90)
+        elif col == 'نسبة الضريبة': widths.append(60)
+        elif col in ['بداية الفترة','نهاية الفترة']: widths.append(95)
         elif col in ['اسم المستأجر','المستأجر']: widths.append(140)
-        elif col in ['رقم العقد']: widths.append(85)
-        elif col == 'طريقة الدفع': widths.append(80)
-        else: widths.append(max(len(reshape_arabic_text(col))*5, 70))
+        elif col in ['رقم العقد']: widths.append(90)
+        elif col == 'طريقة الدفع': widths.append(85)
+        else: widths.append(max(len(reshape_arabic_text(col))*5, 75))
     tw = sum(widths); max_w = w - 40
     if tw > max_w:
         sf = max_w / tw; widths = [x*sf for x in widths]; tw = max_w
@@ -316,7 +330,10 @@ def export_tax_pdf(df, title, file_name, columns_order=None):
             vs = format_currency(v) if isinstance(v, (int, float)) and not pd.isna(v) else (str(v) if not pd.isna(v) else "")
             col_idx = cols.index(col) + 1
             cw = widths[col_idx]
-            max_chars = max(int(cw / 6.5), 5)
+            if col in ['بداية الفترة','نهاية الفترة']:
+                max_chars = 20
+            else:
+                max_chars = max(int(cw / 6.5), 5)
             row_lines.append(wrap_text_for_pdf(vs, max_chars))
         max_lines = max((len(l) for l in row_lines), default=1)
         row_height = max_lines * line_height + 5
@@ -347,7 +364,8 @@ def export_tax_pdf(df, title, file_name, columns_order=None):
         c.line(xs, y+5, xs, y-row_height+5)
         y -= row_height
     c.save(); buf.seek(0)
-    st.download_button("تحميل PDF", data=buf, file_name=file_name, mime="application/pdf")
+    orientation_label = "أفقي" if landscape_mode else "عمودي"
+    st.download_button(f"تحميل PDF ({orientation_label})", data=buf, file_name=file_name, mime="application/pdf")
 
 def print_receipt(receipt_id):
     conn = get_conn(); cur = conn.cursor()
@@ -1396,12 +1414,15 @@ elif menu == "الدفعات":
                 if not f.empty:
                     f_disp = f.drop(columns=["المرفق","معرف_المستأجر"])
                     display_dataframe_with_reorder(f_disp, "payments")
+                    st.markdown("### 📄 خيارات الطباعة")
+                    orient1 = st.radio("اتجاه الصفحة", ["عمودي (Portrait)", "أفقي (Landscape)"], horizontal=True, key="pay_orient")
+                    landscape_choice = (orient1 == "أفقي (Landscape)")
                     c1, c2 = st.columns(2)
                     with c1:
                         o = io.BytesIO()
                         with pd.ExcelWriter(o, engine='xlsxwriter') as wr: f_disp.to_excel(wr, index=False)
                         st.download_button("تحميل Excel", data=o.getvalue(), file_name="دفعات.xlsx", key="dl_pays")
-                    with c2: export_df_to_pdf(f_disp, "بيان الدفعات", "دفعات.pdf")
+                    with c2: export_df_to_pdf(f_disp, "بيان الدفعات", "دفعات.pdf", landscape_mode=landscape_choice)
                 else: st.info("لا نتائج")
             else: st.info("لا دفعات")
         with t2:
@@ -1683,6 +1704,15 @@ elif menu == "التقارير":
     else:
         rt = st.radio("نوع التقرير", ["كشف حساب مستأجر","دفعات بين تاريخين","الإيرادات","الضرائب"])
         cc = st.radio("نوع التاريخ", ["ميلادي","هجري"], horizontal=True)
+
+        # خيار اتجاه الطباعة (يُطبق على كل التقارير)
+        st.markdown("### 📄 خيارات الطباعة")
+        orient_choice = st.radio("اتجاه الصفحة عند الطباعة",
+                                 ["عمودي (Portrait)", "أفقي (Landscape)"],
+                                 horizontal=True, key="report_orientation",
+                                 help="اختر أفقي إذا كانت الأعمدة كثيرة أو الأسماء طويلة")
+        landscape_choice = (orient_choice == "أفقي (Landscape)")
+
         if rt == "كشف حساب مستأجر":
             dft = load_tenants()
             if not dft.empty:
@@ -1741,7 +1771,7 @@ elif menu == "التقارير":
                                                  columns=["رقم السند","المبلغ","التاريخ","الطريقة"]).to_excel(wr, sheet_name='سندات', index=False)
                             st.download_button("تحميل Excel", data=o.getvalue(), file_name=f"kashf_{tn}.xlsx", key=f"dl_kashf_{tid}")
                             ei = f"المنطقة: {tr or '-'} - رقم العقد: {cno}"
-                            export_df_to_pdf(dfe, f"كشف حساب {tn}", f"kashf_{tn}.pdf", extra_info=ei)
+                            export_df_to_pdf(dfe, f"كشف حساب {tn}", f"kashf_{tn}.pdf", extra_info=ei, landscape_mode=landscape_choice)
                     else:
                         conn.close()
                         st.warning("المستأجر لم يعد موجود")
@@ -1786,7 +1816,7 @@ elif menu == "التقارير":
                 with pd.ExcelWriter(o, engine='xlsxwriter') as wr: df.to_excel(wr, index=False)
                 st.download_button("تحميل Excel", data=o.getvalue(), file_name=f"dues_{fd}_{td}.xlsx", key="dl_dues")
                 title_txt = "المستحقات" if only_dues else "الدفعات"
-                export_df_to_pdf(df, f"{title_txt} من {fd} إلى {td}", f"dues_{fd}_{td}.pdf")
+                export_df_to_pdf(df, f"{title_txt} من {fd} إلى {td}", f"dues_{fd}_{td}.pdf", landscape_mode=landscape_choice)
             else:
                 st.info("لا مستحقات في هذه الفترة" if only_dues else "لا دفعات في هذه الفترة")
         elif rt == "الإيرادات":
@@ -1811,7 +1841,7 @@ elif menu == "التقارير":
                 o = io.BytesIO()
                 with pd.ExcelWriter(o, engine='xlsxwriter') as wr: df.to_excel(wr, index=False)
                 st.download_button("Excel", data=o.getvalue(), file_name=f"rev_{fd}_{td}.xlsx", key="dl_rev")
-                export_df_to_pdf(df, "الإيرادات", f"rev_{fd}_{td}.pdf")
+                export_df_to_pdf(df, "الإيرادات", f"rev_{fd}_{td}.pdf", landscape_mode=landscape_choice)
             else: st.info("لا إيرادات")
         elif rt == "الضرائب":
             if cc == "هجري":
@@ -1849,7 +1879,7 @@ elif menu == "التقارير":
                 o = io.BytesIO()
                 with pd.ExcelWriter(o, engine='xlsxwriter') as wr: dfd.to_excel(wr, index=False)
                 st.download_button("Excel", data=o.getvalue(), file_name=f"tax_{fd}_{td}.xlsx", key="dl_tax")
-                export_tax_pdf(dfd, "تقرير الضرائب", f"tax_{fd}_{td}.pdf", columns_order=sc)
+                export_tax_pdf(dfd, "تقرير الضرائب", f"tax_{fd}_{td}.pdf", columns_order=sc, landscape_mode=landscape_choice)
             else: st.info("لا بيانات")
 
 elif menu == "المستخدمون":
