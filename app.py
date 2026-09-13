@@ -126,6 +126,8 @@ def wrap_text_for_pdf(text, max_chars_per_line):
     if remaining: lines.append(remaining)
     return lines
 
+DATE_COLUMNS = ['تاريخ الاستحقاق','تاريخ السداد','بداية الفترة','نهاية الفترة','أقدم دفعة غير مسددة']
+
 def export_df_to_pdf(df, title, file_name, columns_order=None, extra_info=None, landscape_mode=False):
     if columns_order: df = df[columns_order]
     else: df = df.copy()
@@ -156,15 +158,26 @@ def export_df_to_pdf(df, title, file_name, columns_order=None, extra_info=None, 
         for v in df[col].tolist():
             s = format_currency(v) if isinstance(v, (int, float)) and not pd.isna(v) else (str(v) if not pd.isna(v) else "")
             max_len = max(max_len, len(reshape_arabic_text(s)))
-        if col in ['المبلغ','المدفوع','المتبقي','المبلغ شامل الضريبة','مبلغ الضريبة','المبلغ غير شامل الضريبة','الإيجار السنوي']: widths.append(85)
-        elif col in ['تاريخ الاستحقاق','تاريخ السداد','بداية الفترة','نهاية الفترة']: widths.append(95)
-        elif col in ['المستأجر','اسم المستأجر']: widths.append(140)
-        elif col in ['العقار','اسم العقار']: widths.append(120)
-        elif col in ['المنطقة']: widths.append(80)
-        elif col in ['الحالة']: widths.append(65)
-        elif col in ['رقم السند','رقم العقد']: widths.append(90)
-        elif col in ['طريقة الدفع','طريقة السداد']: widths.append(85)
-        else: widths.append(min(max(max_len * 6 + 15, 65), 130))
+        if col in ['المبلغ','المدفوع','المتبقي','المبلغ شامل الضريبة','مبلغ الضريبة','المبلغ غير شامل الضريبة','الإيجار السنوي','إجمالي المتبقي']:
+            widths.append(95)
+        elif col in DATE_COLUMNS:
+            widths.append(115)
+        elif col in ['المستأجر','اسم المستأجر']:
+            widths.append(140)
+        elif col in ['العقار','اسم العقار']:
+            widths.append(120)
+        elif col in ['المنطقة']:
+            widths.append(80)
+        elif col in ['الحالة']:
+            widths.append(65)
+        elif col in ['رقم السند','رقم العقد']:
+            widths.append(90)
+        elif col in ['طريقة الدفع','طريقة السداد']:
+            widths.append(85)
+        elif col in ['عدد الدفعات المستحقة','عدد الدفعات المتأخرة']:
+            widths.append(90)
+        else:
+            widths.append(min(max(max_len * 6 + 15, 65), 130))
     tw = sum(widths); max_w = w - 40
     if tw > max_w:
         sf = max_w / tw; widths = [x * sf for x in widths]; tw = max_w
@@ -186,11 +199,12 @@ def export_df_to_pdf(df, title, file_name, columns_order=None, extra_info=None, 
             vs = format_currency(v) if isinstance(v, (int, float)) and not pd.isna(v) else (str(v) if not pd.isna(v) else "")
             col_idx = cols.index(col) + 1
             cw = widths[col_idx]
-            if col in ['تاريخ الاستحقاق','تاريخ السداد','بداية الفترة','نهاية الفترة']:
-                max_chars = 20
+            # ← التواريخ لا تُقسم أبداً على أسطر
+            if col in DATE_COLUMNS:
+                lines = [vs]
             else:
                 max_chars = max(int(cw / 7), 5)
-            lines = wrap_text_for_pdf(vs, max_chars)
+                lines = wrap_text_for_pdf(vs, max_chars)
             row_lines.append(lines)
         max_lines = max((len(lines) for lines in row_lines), default=1)
         row_height = max_lines * line_height + 6
@@ -211,7 +225,13 @@ def export_df_to_pdf(df, title, file_name, columns_order=None, extra_info=None, 
             cw = widths[i]; xr = xc; xl = xc - cw
             lines = row_lines[i-1]; start_y = y - 3
             for li, line in enumerate(lines):
+                # ← خط أصغر للتواريخ لضمان ظهورها كاملة
+                if col in DATE_COLUMNS:
+                    c.setFont(fn, 7)
+                else:
+                    c.setFont(fn, 8)
                 c.drawRightString(xr - 5, start_y - li * line_height, reshape_arabic_text(line))
+            c.setFont(fn, 8)
             xc -= cw
         c.setStrokeColor(colors.grey); c.setLineWidth(0.5)
         c.line(xs, y+5, xs+tw, y+5); c.line(xs, y - row_height + 5, xs+tw, y - row_height + 5)
@@ -254,7 +274,7 @@ def export_tax_pdf(df, title, file_name, columns_order=None, landscape_mode=True
         if col == "م": widths.append(25)
         elif col in ['المبلغ شامل الضريبة','مبلغ الضريبة','المبلغ غير شامل الضريبة']: widths.append(90)
         elif col == 'نسبة الضريبة': widths.append(60)
-        elif col in ['بداية الفترة','نهاية الفترة']: widths.append(95)
+        elif col in ['بداية الفترة','نهاية الفترة']: widths.append(115)
         elif col in ['اسم المستأجر','المستأجر']: widths.append(140)
         elif col in ['رقم العقد']: widths.append(90)
         elif col == 'طريقة الدفع': widths.append(85)
@@ -279,9 +299,12 @@ def export_tax_pdf(df, title, file_name, columns_order=None, landscape_mode=True
             vs = format_currency(v) if isinstance(v, (int, float)) and not pd.isna(v) else (str(v) if not pd.isna(v) else "")
             col_idx = cols.index(col) + 1
             cw = widths[col_idx]
-            if col in ['بداية الفترة','نهاية الفترة']: max_chars = 20
-            else: max_chars = max(int(cw / 6.5), 5)
-            row_lines.append(wrap_text_for_pdf(vs, max_chars))
+            if col in ['بداية الفترة','نهاية الفترة']:
+                lines = [vs]
+            else:
+                max_chars = max(int(cw / 6.5), 5)
+                lines = wrap_text_for_pdf(vs, max_chars)
+            row_lines.append(lines)
         max_lines = max((len(l) for l in row_lines), default=1)
         row_height = max_lines * line_height + 5
         if y - row_height < 40:
@@ -298,7 +321,12 @@ def export_tax_pdf(df, title, file_name, columns_order=None, landscape_mode=True
         for i, col in enumerate(cols, 1):
             cw = widths[i]; xr = xc; xl = xc - cw
             for li, line in enumerate(row_lines[i-1]):
+                if col in ['بداية الفترة','نهاية الفترة']:
+                    c.setFont(fn, 6.5)
+                else:
+                    c.setFont(fn, 8)
                 c.drawRightString(xr-4, y - 3 - li*line_height, reshape_arabic_text(line))
+            c.setFont(fn, 8)
             xc -= cw
         c.setStrokeColor(colors.grey); c.setLineWidth(0.5)
         c.line(xs, y+5, xs+tw, y+5); c.line(xs, y-row_height+5, xs+tw, y-row_height+5)
@@ -942,7 +970,6 @@ def update_receipt(rid, rn, tid, cid, pid, amt, rd, pm, nt, att):
     conn.commit(); conn.close(); st.cache_data.clear()
     return True, "تم التعديل"
 
-# ================== دوال النسخ الاحتياطي المتقدم ==================
 def create_compressed_backup():
     try:
         tmp_db = tempfile.NamedTemporaryFile(delete=False, suffix=".db")
@@ -1646,7 +1673,7 @@ elif menu == "التقارير":
     st.subheader("📈 التقارير")
     if not has_permission(current_user_id, "التقارير"): st.error("لا تملك صلاحية")
     else:
-        rt = st.radio("نوع التقرير", ["كشف حساب مستأجر","دفعات بين تاريخين","الإيرادات","الضرائب"])
+        rt = st.radio("نوع التقرير", ["كشف حساب مستأجر","دفعات بين تاريخين","الإيرادات","الضرائب","تقرير المستحقات"])
         cc = st.radio("نوع التاريخ", ["ميلادي","هجري"], horizontal=True)
         st.markdown("### 📄 خيارات الطباعة")
         orient_choice = st.radio("اتجاه الصفحة عند الطباعة", ["عمودي (Portrait)", "أفقي (Landscape)"], horizontal=True, key="report_orientation")
@@ -1816,6 +1843,61 @@ elif menu == "التقارير":
                 st.download_button("Excel", data=o.getvalue(), file_name=f"tax_{fd}_{td}.xlsx", key="dl_tax")
                 export_tax_pdf(dfd, "تقرير الضرائب", f"tax_{fd}_{td}.pdf", columns_order=sc, landscape_mode=landscape_choice)
             else: st.info("لا بيانات")
+        elif rt == "تقرير المستحقات":
+            st.markdown("### 📋 تقرير المستحقات (مجمع لكل مستأجر)")
+            st.caption("يعرض كل مستأجر مرة واحدة فقط، مع أقدم دفعة غير مسددة، وعدد الدفعات المتأخرة، وإجمالي المتبقي.")
+            all_tenants_df = load_tenants()
+            regions_list = ["الكل"] + sorted([r for r in all_tenants_df["المنطقة"].dropna().unique().tolist() if r])
+            rf_due = st.selectbox("المنطقة", regions_list, key="due_report_region")
+            conn = get_conn()
+            q = '''SELECT t.id, t.name as tenant_name, t.region,
+                   MIN(pay.due_date) as oldest_due,
+                   COUNT(*) as num_payments,
+                   SUM(CASE WHEN pay.due_date < date('now') THEN 1 ELSE 0 END) as num_overdue,
+                   SUM(pay.amount - pay.paid_amount) as total_remaining
+                   FROM payments pay
+                   JOIN tenants t ON pay.tenant_id = t.id
+                   WHERE (pay.amount - pay.paid_amount) > 0'''
+            params = []
+            if rf_due != "الكل":
+                q += " AND t.region = ?"
+                params.append(rf_due)
+            q += " GROUP BY t.id, t.name, t.region ORDER BY oldest_due ASC, t.name"
+            df_due = pd.read_sql_query(q, conn, params=params)
+            conn.close()
+            if not df_due.empty:
+                df_due_display = df_due.rename(columns={
+                    'tenant_name': 'المستأجر',
+                    'region': 'المنطقة',
+                    'oldest_due': 'أقدم دفعة غير مسددة',
+                    'num_payments': 'عدد الدفعات المستحقة',
+                    'num_overdue': 'عدد الدفعات المتأخرة',
+                    'total_remaining': 'إجمالي المتبقي'
+                })
+                df_due_display = df_due_display[['المستأجر','المنطقة','أقدم دفعة غير مسددة','عدد الدفعات المستحقة','عدد الدفعات المتأخرة','إجمالي المتبقي']]
+                display_dataframe_with_reorder(df_due_display, "due_report_table")
+                st.markdown("---")
+                c1, c2, c3, c4 = st.columns(4)
+                c1.metric("عدد المستأجرين المديونين", len(df_due))
+                c2.metric("إجمالي الدفعات المستحقة", f"{int(df_due['num_payments'].sum())} دفعة")
+                c3.metric("إجمالي الدفعات المتأخرة", f"{int(df_due['num_overdue'].sum())} دفعة")
+                c4.metric("💵 إجمالي المبالغ المتبقية", format_currency(df_due['total_remaining'].sum()))
+                st.markdown("---")
+                st.markdown("#### 📤 تصدير التقرير")
+                df_export = df_due_display.copy()
+                df_export['إجمالي المتبقي'] = df_export['إجمالي المتبقي'].apply(lambda x: format_currency(x))
+                c_exp1, c_exp2 = st.columns(2)
+                with c_exp1:
+                    o = io.BytesIO()
+                    with pd.ExcelWriter(o, engine='xlsxwriter') as wr:
+                        df_export.to_excel(wr, index=False, sheet_name='المستحقات')
+                    st.download_button("📥 تحميل Excel", data=o.getvalue(),
+                                       file_name=f"تقرير_المستحقات_{date.today()}.xlsx", key="dl_due_report_xl")
+                with c_exp2:
+                    export_df_to_pdf(df_export, "تقرير المستحقات", f"تقرير_المستحقات_{date.today()}.pdf",
+                                     landscape_mode=landscape_choice)
+            else:
+                st.success("✅ لا توجد مستحقات في الوقت الحالي — جميع الدفعات مسددة بالكامل")
 
 elif menu == "المستخدمون":
     st.subheader("👤 المستخدمون")
