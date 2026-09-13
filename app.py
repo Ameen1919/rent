@@ -141,7 +141,6 @@ def export_df_to_pdf(df, title, file_name, columns_order=None, extra_info=None, 
         try: df_num[c] = df_num[c].apply(parse_currency)
         except: pass
 
-    # تحديد الأعمدة الرقمية
     numeric_cols_set = set()
     for col in df.columns:
         try:
@@ -255,7 +254,6 @@ def export_df_to_pdf(df, title, file_name, columns_order=None, extra_info=None, 
         c.line(xs, y+5, xs, y - row_height + 5)
         y -= row_height
 
-    # صف الإجمالي — الأعمدة الرقمية فقط
     c.line(xs, y+5, xs+tw, y+5); y -= 5
     c.setFillColor(colors.HexColor("#e8f0fe")); c.rect(xs, y-15, tw, 22, fill=1, stroke=0); c.setFillColor(colors.black)
     cw = widths[0]; xr = xs + tw; xl = xr - cw
@@ -376,9 +374,11 @@ def print_receipt(receipt_id):
     return buf.getvalue()
 
 def get_conn():
-    conn = sqlite3.connect("rentals.db", timeout=10)
+    conn = sqlite3.connect("rentals.db", timeout=30)
     conn.row_factory = sqlite3.Row
-    conn.execute("PRAGMA journal_mode=WAL;"); conn.execute("PRAGMA synchronous=NORMAL;")
+    conn.execute("PRAGMA journal_mode=WAL;")
+    conn.execute("PRAGMA synchronous=NORMAL;")
+    conn.execute("PRAGMA busy_timeout=30000;")
     return conn
 
 def ensure_columns(cur, table, cols):
@@ -655,6 +655,17 @@ def create_payment_schedule(cid, tid, sd, ed, ra, im):
     conn.commit(); conn.close()
     return cnt
 
+def create_payment_schedule_inline(cur, cid, tid, sd, ed, ra, im):
+    """نسخة داخلية تستخدم cursor موجود — بدون فتح اتصال جديد (تجنب Database is locked)"""
+    step = relativedelta(months=im); cur_d = sd
+    cnt = 0
+    while cur_d <= ed:
+        base = ra * im / 12.0
+        cur.execute('INSERT INTO payments (contract_id, tenant_id, due_date, amount) VALUES (?,?,?,?)',
+                    (cid, tid, cur_d.isoformat(), base))
+        cur_d += step; cnt += 1
+    return cnt
+
 def create_temporary_payment_schedule(cid, tid, sd, ed, total_amount, interval_months, note=""):
     step = relativedelta(months=interval_months); current = sd
     payment_amount = total_amount * interval_months / 12.0
@@ -839,28 +850,51 @@ def import_contracts_from_excel(f):
         td = {r[1]: r[0] for r in cur.execute("SELECT id, name FROM tenants").fetchall()}
         pd_ = {r[1]: r[0] for r in cur.execute("SELECT id, name FROM properties").fetchall()}
         imp = 0
-        for _, row in df.iterrows():
-            tn = str(row["اسم المستأجر"]).strip(); pn = str(row["اسم العقار"]).strip()
-            if tn not in td or pn not in pd_: continue
-            sd = pd.to_datetime(row["تاريخ البداية"]).date(); ed = pd.to_datetime(row["تاريخ النهاية"]).date()
-            if sd >= ed: continue
-            cnum = str(row.get("رقم العقد","")).strip() or generate_contract_number()
-            ra = safe_float(row.get("قيمة الإيجار السنوي", 0))
-            im = int(row.get("دورية السداد (شهور)", 1)) if "دورية السداد (شهور)" in df.columns else 1
-            da = safe_float(row.get("التأمين", 0))
-            ti = 1 if row.get("شامل الضريبة", False) else 0
-            tr = safe_float(row.get("نسبة الضريبة", 0.15))
-            nt = str(row.get("ملاحظات","")).strip() if "ملاحظات" in df.columns else ""
-            cur.execute('''INSERT INTO contracts (tenant_id, property_id, contract_number, start_date, end_date,
-                rent_amount, interval_months, deposit_amount, notes, tax_included, tax_rate)
-                VALUES (?,?,?,?,?,?,?,?,?,?,?)''',
-                (td[tn], pd_[pn], cnum, sd.isoformat(), ed.isoformat(), ra, im, da, nt, ti, tr))
-            cid = cur.lastrowid
-            create_payment_schedule(cid, td[tn], sd, ed, ra, im)
-            imp += 1
+        errors = []
+        for idx, row in df.iterrows():
+            try:
+                tn = str(row["اسم المستأجر"]).strip(); pn = str(row["اسم العقار"]).strip()
+                if tn not in td or pn not in pd_:
+                    errors.append(f"صف {idx+2}: المستأجر أو العقار غير موجود")
+                    continue
+                sd = pd.to_datetime(row["تاريخ البداية"]).date(); ed = pd.to_datetime(row["تاريخ النهاية"]).date()
+                if sd >= ed:
+                    errors.append(f"صف {idx+2}: تاريخ البداية بعد النهاية")
+                    continue
+                cnum = str(row.get("رقم العقد","")).strip() if "رقم العقد" in df.columns else ""
+                if not cnum:
+                    cnum = generate_contract_number()
+                else:
+                    ex = cur.execute("SELECT id FROM contracts WHERE contract_number=?", (cnum,)).fetchone()
+                    if ex:
+                        errors.append(f"صف {idx+2}: رقم العقد '{cnum}' مكرر — تم تجاهله")
+                        continue
+                ra = safe_float(row.get("قيمة الإيجار السنوي", 0))
+                im = int(row.get("دورية السداد (شهور)", 1)) if "دورية السداد (شهور)" in df.columns else 1
+                da = safe_float(row.get("التأمين", 0))
+                ti = 1 if row.get("شامل الضريبة", False) else 0
+                tr = safe_float(row.get("نسبة الضريبة", 0.15))
+                nt = str(row.get("ملاحظات","")).strip() if "ملاحظات" in df.columns else ""
+                cur.execute('''INSERT INTO contracts (tenant_id, property_id, contract_number, start_date, end_date,
+                    rent_amount, interval_months, deposit_amount, notes, tax_included, tax_rate)
+                    VALUES (?,?,?,?,?,?,?,?,?,?,?)''',
+                    (td[tn], pd_[pn], cnum, sd.isoformat(), ed.isoformat(), ra, im, da, nt, ti, tr))
+                cid = cur.lastrowid
+                create_payment_schedule_inline(cur, cid, td[tn], sd, ed, ra, im)
+                imp += 1
+                if imp % 10 == 0:
+                    conn.commit()
+            except Exception as e:
+                errors.append(f"صف {idx+2}: {str(e)}")
         conn.commit(); conn.close(); st.cache_data.clear()
-        st.toast(f"تم استيراد {imp} عقد", icon="✅")
-    except Exception as e: st.error(f"خطأ: {e}")
+        msg = f"✅ تم استيراد {imp} عقد"
+        if errors: msg += f" — فشل {len(errors)} صف"
+        st.toast(msg, icon="✅")
+        if errors:
+            with st.expander("عرض الأخطاء"):
+                for er in errors[:20]: st.text(er)
+    except Exception as e:
+        st.error(f"خطأ: {e}")
 
 def add_user(u, p, r):
     conn = get_conn(); cur = conn.cursor()
@@ -1216,8 +1250,8 @@ elif menu == "إدارة البيانات":
             st.subheader("📄 العقود")
             ci1, ci2 = st.columns(2)
             with ci1:
-                df = pd.DataFrame(columns=["اسم المستأجر","اسم العقار","تاريخ البداية","تاريخ النهاية","قيمة الإيجار السنوي","دورية السداد (شهور)","التأمين","شامل الضريبة","نسبة الضريبة","ملاحظات"])
-                df.loc[0] = ["أحمد","عمارة","2025-01-01","2025-12-31",60000,6,5000,0,0.15,""]
+                df = pd.DataFrame(columns=["رقم العقد","اسم المستأجر","اسم العقار","تاريخ البداية","تاريخ النهاية","قيمة الإيجار السنوي","دورية السداد (شهور)","التأمين","شامل الضريبة","نسبة الضريبة","ملاحظات"])
+                df.loc[0] = ["CTR-2025-001","أحمد","عمارة","2025-01-01","2025-12-31",60000,6,5000,0,0.15,""]
                 o = io.BytesIO()
                 with pd.ExcelWriter(o, engine='xlsxwriter') as wr: df.to_excel(wr, index=False, sheet_name='العقود')
                 o.seek(0)
@@ -1274,8 +1308,22 @@ elif menu == "إدارة البيانات":
                     fc = fc[fc["اسم المستأجر"].isin(tt)]
                 if tfc != "الكل": fc = fc[fc["اسم المستأجر"]==tfc]
                 if not fc.empty:
-                    display_dataframe_with_reorder(fc, "contracts")
-                    cid = st.selectbox("اختر عقد", fc["الرقم"], format_func=lambda x: fc[fc["الرقم"]==x]["رقم العقد"].iloc[0], key="sel_contract")
+                    fc = fc.reset_index(drop=True)
+
+                    # ===== ترقيم متسلسل للعرض فقط (1, 2, 3...) =====
+                    fc_show = fc.copy()
+                    fc_show["الرقم"] = range(1, len(fc_show) + 1)
+
+                    display_dataframe_with_reorder(fc_show, "contracts")
+
+                    # خيارات الاختيار — نستخدم الرقم الحقيقي للحفظ لكن نعرض الرقم المتسلسل
+                    c_options = {}
+                    for i, row in fc.iterrows():
+                        display_num = i + 1
+                        c_options[row['الرقم']] = f"{display_num} - {row['رقم العقد']} - {row['اسم المستأجر']}"
+
+                    cid = st.selectbox("اختر عقد", options=list(c_options.keys()),
+                                       format_func=lambda x: c_options[x], key="sel_contract")
                     if cid:
                         conn = get_conn(); cur = conn.cursor()
                         ci = cur.execute('''SELECT c.*, t.name as tenant_name, t.phone as tphone, t.region as tregion,
@@ -1940,7 +1988,6 @@ elif menu == "التقارير":
                 })
                 df_due_display = df_due_display[['المستأجر','المنطقة','أقدم دفعة غير مسددة','عدد الدفعات المستحقة','عدد الدفعات المتأخرة','إجمالي المتبقي']]
 
-                # نستخدم الأعمدة المختارة
                 df_selected, selected_cols = display_dataframe_with_reorder(df_due_display, "due_report_table")
 
                 st.markdown("---")
@@ -1953,10 +2000,8 @@ elif menu == "التقارير":
                 st.markdown("---")
                 st.markdown("#### 📤 تصدير التقرير")
 
-                # نحتفظ بالأرقام كما هي، دالة PDF ستنسقها تلقائياً
                 df_export = df_selected.copy()
 
-                # عنوان PDF مبسط
                 title_parts = [f"مستحقات سابقة حتى {td_due}"]
                 if rf_due != "الكل":
                     title_parts.append(f"المنطقة: {rf_due}")
