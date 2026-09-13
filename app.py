@@ -1563,12 +1563,31 @@ elif menu == "الدفعات":
     if not has_permission(current_user_id, "الدفعات"): st.error("لا تملك صلاحية")
     else:
         t1, t2 = st.tabs(["عرض الدفعات","تعديل دفعة"])
-        with t1:
+                with t1:
             sf = st.selectbox("الحالة", ["الكل","مستحق","مدفوع","متأخر","جزئي"])
             dfp = load_payments(sf)
             if not dfp.empty:
+                # ✅ فلاتر المنطقة والمستأجر
+                ff1, ff2 = st.columns(2)
+                with ff1:
+                    regions_list_p = ["الكل"] + sorted([r for r in dfp["المنطقة"].dropna().unique().tolist() if r])
+                    sel_region_p = st.selectbox("المنطقة", regions_list_p, key="pay_region_flt")
+                with ff2:
+                    # المستأجرين مرتبطين بالمنطقة المختارة
+                    if sel_region_p != "الكل":
+                        tenants_in_region = sorted(dfp[dfp["المنطقة"] == sel_region_p]["المستأجر"].dropna().unique().tolist())
+                    else:
+                        tenants_in_region = sorted(dfp["المستأجر"].dropna().unique().tolist())
+                    sel_tenant_p = st.selectbox("المستأجر", ["الكل"] + tenants_in_region, key="pay_tenant_flt")
+
+                dfp_f = dfp.copy()
+                if sel_region_p != "الكل":
+                    dfp_f = dfp_f[dfp_f["المنطقة"] == sel_region_p]
+                if sel_tenant_p != "الكل":
+                    dfp_f = dfp_f[dfp_f["المستأجر"] == sel_tenant_p]
+
                 sq = st.text_input("بحث", key="ps_")
-                f = dfp[dfp["المستأجر"].str.contains(sq, case=False, na=False)] if sq else dfp
+                f = dfp_f[dfp_f["المستأجر"].str.contains(sq, case=False, na=False)] if sq else dfp_f
                 if not f.empty:
                     f_disp = f.drop(columns=["المرفق","معرف_المستأجر"])
                     display_dataframe_with_reorder(f_disp, "payments")
@@ -1645,38 +1664,38 @@ elif menu == "سندات القبض":
                 if dft.empty: st.warning("لا مستأجرين")
                 else:
                     tid = st.selectbox("المستأجر", dft["الرقم"], format_func=lambda x: dft[dft["الرقم"]==x]["الاسم"].iloc[0], key="sel_tenant_pay")
-                    today = date.today()
-                    conn = get_conn(); cur = conn.cursor()
-                    dues = cur.execute('''SELECT id, due_date, amount, paid_amount, (amount - paid_amount) as remaining
-                        FROM payments WHERE tenant_id=? AND status != 'مدفوع' AND due_date <= ? ORDER BY due_date''',
-                        (tid, today.isoformat())).fetchall()
-                    conn.close()
-                    if not dues: st.info("لا دفعات مستحقة")
-                    else:
-                        dfd = pd.DataFrame(dues, columns=["رقم الدفعة","الاستحقاق","المبلغ","المدفوع","المتبقي"])
-                        rtl_dataframe(dfd)
-                        pid = st.selectbox("الدفعة", dfd["رقم الدفعة"].tolist(), format_func=lambda x: f"دفعة {x}", key="sel_pay_pay")
-                        if pid:
-                            od = [d for d in dues if d[0]==pid][0]; rem = od[4]
-                            pdte = st.date_input("تاريخ السداد", value=today, key="pay_date_in")
-                            am = st.number_input("المبلغ", min_value=0.0, max_value=float(rem), value=float(rem), step=100.0, key="pay_amt_in")
-                            mt = st.selectbox("طريقة الدفع", ["نقدي","تحويل بنكي","شيك","دفع في المنصة"], key="pay_mt_in")
-                            att = st.file_uploader("مرفق", type=["pdf","png","jpg","jpeg"], key="pay_att_in")
-                            if st.button("تسجيل السداد", key="btn_register_pay"):
-                                if am <= 0: st.error("المبلغ > 0")
-                                else:
-                                    fb = att.read() if att else None
-                                    conn = get_conn(); cur = conn.cursor()
-                                    pd_ = cur.execute("SELECT amount, paid_amount, contract_id FROM payments WHERE id=?", (pid,)).fetchone()
-                                    npaid = pd_[1] + am
-                                    stt = "مدفوع" if npaid >= pd_[0] else "جزئي"
-                                    cur.execute("UPDATE payments SET paid_amount=?, paid_date=?, status=?, attachment=? WHERE id=?",
-                                                (npaid, pdte.isoformat(), stt, fb, pid))
-                                    rn = generate_receipt_number()
-                                    cur.execute('''INSERT INTO receipts (receipt_number, tenant_id, contract_id, payment_id, amount, receipt_date, payment_method, attachment)
-                                        VALUES (?,?,?,?,?,?,?,?)''', (rn, tid, pd_[2], pid, am, pdte.isoformat(), mt, fb))
-                                    conn.commit(); conn.close(); st.cache_data.clear()
-                                    st.toast(f"تم تسجيل {format_currency(am)}", icon="✅"); st.rerun()
+                        today = date.today()
+                        conn = get_conn(); cur = conn.cursor()
+                        dues = cur.execute('''SELECT id, due_date, amount, paid_amount, (amount - paid_amount) as remaining
+                            FROM payments WHERE tenant_id=? AND status != 'مدفوع' AND due_date <= ? ORDER BY due_date''',
+                            (tid, today.isoformat())).fetchall()
+                        conn.close()
+                        if not dues: st.info("لا دفعات مستحقة")
+                        else:
+                            dfd = pd.DataFrame(dues, columns=["رقم الدفعة","الاستحقاق","المبلغ","المدفوع","المتبقي"])
+                            rtl_dataframe(dfd)
+                            pid = st.selectbox("الدفعة", dfd["رقم الدفعة"].tolist(), format_func=lambda x: f"دفعة {x}", key="sel_pay_pay")
+                            if pid:
+                                od = [d for d in dues if d[0]==pid][0]; rem = od[4]
+                                pdte = st.date_input("تاريخ السداد", value=today, key="pay_date_in")
+                                am = st.number_input("المبلغ", min_value=0.0, max_value=float(rem), value=float(rem), step=100.0, key="pay_amt_in")
+                                mt = st.selectbox("طريقة الدفع", ["نقدي","تحويل بنكي","شيك","دفع في المنصة"], key="pay_mt_in")
+                                att = st.file_uploader("مرفق", type=["pdf","png","jpg","jpeg"], key="pay_att_in")
+                                if st.button("تسجيل السداد", key="btn_register_pay"):
+                                    if am <= 0: st.error("المبلغ > 0")
+                                    else:
+                                        fb = att.read() if att else None
+                                        conn = get_conn(); cur = conn.cursor()
+                                        pd_ = cur.execute("SELECT amount, paid_amount, contract_id FROM payments WHERE id=?", (pid,)).fetchone()
+                                        npaid = pd_[1] + am
+                                        stt = "مدفوع" if npaid >= pd_[0] else "جزئي"
+                                        cur.execute("UPDATE payments SET paid_amount=?, paid_date=?, status=?, attachment=? WHERE id=?",
+                                                    (npaid, pdte.isoformat(), stt, fb, pid))
+                                        rn = generate_receipt_number()
+                                        cur.execute('''INSERT INTO receipts (receipt_number, tenant_id, contract_id, payment_id, amount, receipt_date, payment_method, attachment)
+                                            VALUES (?,?,?,?,?,?,?,?)''', (rn, tid, pd_[2], pid, am, pdte.isoformat(), mt, fb))
+                                        conn.commit(); conn.close(); st.cache_data.clear()
+                                        st.toast(f"تم تسجيل {format_currency(am)}", icon="✅"); st.rerun()
             else: st.warning("ليس لديك صلاحية")
         with t2:
             dfr = load_receipts()
@@ -1868,18 +1887,29 @@ elif menu == "التقارير":
                             try: td = hijri_to_gregorian(hi)
                             except: st.error("خطأ"); st.stop()
                         else: td = st.date_input("إلى", value=date.today(), key="kr_d2")
+                                        # ✅ خيار تضمين التأخيرات السابقة
+                    include_past = st.checkbox(
+                        "☑️ تضمين الدفعات المتأخرة قبل بداية الفترة",
+                        value=False,
+                        key=f"kashf_past_{tid}",
+                        help="عند التفعيل: يشمل الدفعات المستحقة قبل بداية الفترة + كل الدفعات داخل الفترة"
+                    )
+
                     conn = get_conn(); cur = conn.cursor()
                     tn_row = cur.execute("SELECT name, region FROM tenants WHERE id=?", (tid,)).fetchone()
                     if tn_row:
                         tn, tr = tn_row
                         cr = cur.execute("SELECT c.contract_number FROM contracts c WHERE c.tenant_id=? AND c.status='نشط' LIMIT 1", (tid,)).fetchone()
                         cno = cr[0] if cr else "لا يوجد"
-                        pays = cur.execute('''SELECT id, due_date, amount, paid_amount, (amount-paid_amount), status, paid_date, attachment
-                            FROM payments WHERE tenant_id=? AND due_date BETWEEN ? AND ? ORDER BY due_date''',
-                            (tid, fd.isoformat(), td.isoformat())).fetchall()
-                        recs = cur.execute('''SELECT receipt_number, amount, receipt_date, payment_method, attachment
-                            FROM receipts WHERE tenant_id=? AND receipt_date BETWEEN ? AND ? ORDER BY receipt_date DESC''',
-                            (tid, fd.isoformat(), td.isoformat())).fetchall()
+                        # ✅ استعلام مشروط
+                        if include_past:
+                            pays = cur.execute('''SELECT id, due_date, amount, paid_amount, (amount-paid_amount), status, paid_date, attachment
+                                FROM payments WHERE tenant_id=? AND due_date <= ? AND (amount - paid_amount) > 0 ORDER BY due_date''',
+                                (tid, td.isoformat())).fetchall()
+                        else:
+                            pays = cur.execute('''SELECT id, due_date, amount, paid_amount, (amount-paid_amount), status, paid_date, attachment
+                                FROM payments WHERE tenant_id=? AND due_date BETWEEN ? AND ? ORDER BY due_date''',
+                                (tid, fd.isoformat(), td.isoformat())).fetchall()
                         conn.close()
                         st.markdown(f"### كشف حساب: {tn}")
                         st.write(f"**المنطقة:** {tr or '-'} | **العقد:** {cno}")
