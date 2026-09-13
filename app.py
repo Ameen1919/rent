@@ -73,10 +73,12 @@ def display_dataframe_with_reorder(df, key_prefix):
     default = st.session_state.get(f"{key_prefix}_order", columns)
     selected = st.multiselect("اختر الأعمدة وترتيبها", options=columns, default=default, key=f"{key_prefix}_cols")
     if selected:
-        df = df[selected]
+        df_out = df[selected]
         st.session_state[f"{key_prefix}_order"] = selected
-    rtl_dataframe(df, key=f"{key_prefix}_rtl")
-    return df, selected
+    else:
+        df_out = df
+    rtl_dataframe(df_out, key=f"{key_prefix}_rtl")
+    return df_out, selected
 
 def download_arabic_font():
     fp = "Amiri-Regular.ttf"
@@ -135,6 +137,17 @@ def export_df_to_pdf(df, title, file_name, columns_order=None, extra_info=None, 
     for c in df_num.columns:
         try: df_num[c] = df_num[c].apply(parse_currency)
         except: pass
+
+    # تحديد الأعمدة الرقمية فقط
+    numeric_cols_set = set()
+    for col in df.columns:
+        try:
+            test = pd.to_numeric(df[col].astype(str).str.replace(',', ''), errors='coerce')
+            if test.notna().any():
+                numeric_cols_set.add(col)
+        except:
+            pass
+
     buf = io.BytesIO()
     pagesize = landscape(A4) if landscape_mode else A4
     c = canvas.Canvas(buf, pagesize=pagesize)
@@ -199,7 +212,6 @@ def export_df_to_pdf(df, title, file_name, columns_order=None, extra_info=None, 
             vs = format_currency(v) if isinstance(v, (int, float)) and not pd.isna(v) else (str(v) if not pd.isna(v) else "")
             col_idx = cols.index(col) + 1
             cw = widths[col_idx]
-            # ← التواريخ لا تُقسم أبداً على أسطر
             if col in DATE_COLUMNS:
                 lines = [vs]
             else:
@@ -225,7 +237,6 @@ def export_df_to_pdf(df, title, file_name, columns_order=None, extra_info=None, 
             cw = widths[i]; xr = xc; xl = xc - cw
             lines = row_lines[i-1]; start_y = y - 3
             for li, line in enumerate(lines):
-                # ← خط أصغر للتواريخ لضمان ظهورها كاملة
                 if col in DATE_COLUMNS:
                     c.setFont(fn, 7)
                 else:
@@ -239,16 +250,20 @@ def export_df_to_pdf(df, title, file_name, columns_order=None, extra_info=None, 
         for i in range(len(headers)): c.line(xc, y+5, xc, y - row_height + 5); xc -= widths[i]
         c.line(xs, y+5, xs, y - row_height + 5)
         y -= row_height
+
+    # ===== صف الإجمالي — نعرض الإجمالي فقط للأعمدة الرقمية =====
     c.line(xs, y+5, xs+tw, y+5); y -= 5
     c.setFillColor(colors.HexColor("#e8f0fe")); c.rect(xs, y-15, tw, 22, fill=1, stroke=0); c.setFillColor(colors.black)
     cw = widths[0]; xr = xs + tw; xl = xr - cw
     c.drawCentredString((xl+xr)/2, y-7, reshape_arabic_text("الإجمالي")); xc = xr - cw
     for i, col in enumerate(cols, 1):
         cw = widths[i]; xr = xc; xl = xc - cw
-        try:
-            total_val = df_num[col].sum()
-            c.drawRightString(xr-5, y-7, format_currency(total_val))
-        except: pass
+        if col in numeric_cols_set:
+            try:
+                total_val = df_num[col].sum()
+                c.drawRightString(xr-5, y-7, format_currency(total_val))
+            except: pass
+        # لا نضع أي شيء للأعمدة النصية
         xc -= cw
     c.save(); buf.seek(0)
     orientation_label = "أفقي" if landscape_mode else "عمودي"
@@ -1671,8 +1686,7 @@ elif menu == "عقود منتهية":
 
 elif menu == "التقارير":
     st.subheader("📈 التقارير")
-    if not has_permission(current_user_id, "التقارير"):
-        st.error("لا تملك صلاحية")
+    if not has_permission(current_user_id, "التقارير"): st.error("لا تملك صلاحية")
     else:
         rt = st.radio("نوع التقرير", ["كشف حساب مستأجر","دفعات بين تاريخين","الإيرادات","الضرائب","تقرير المستحقات"])
         cc = st.radio("نوع التاريخ", ["ميلادي","هجري"], horizontal=True)
@@ -1873,8 +1887,7 @@ elif menu == "التقارير":
             include_past_overdue = st.checkbox(
                 "☑️ تضمين الدفعات المتأخرة قبل بداية الفترة أيضاً",
                 value=True,
-                key="due_include_past",
-                help="عند التفعيل: تشمل المتأخرات من قبل بداية الفترة + كل الدفعات داخل الفترة. عند الإلغاء: فقط الدفعات التي تاريخ استحقاقها داخل الفترة."
+                key="due_include_past"
             )
 
             all_tenants_df = load_tenants()
@@ -1923,7 +1936,9 @@ elif menu == "التقارير":
                     'total_remaining': 'إجمالي المتبقي'
                 })
                 df_due_display = df_due_display[['المستأجر','المنطقة','أقدم دفعة غير مسددة','عدد الدفعات المستحقة','عدد الدفعات المتأخرة','إجمالي المتبقي']]
-                display_dataframe_with_reorder(df_due_display, "due_report_table")
+
+                # نستخدم الأعمدة المختارة
+                df_selected, selected_cols = display_dataframe_with_reorder(df_due_display, "due_report_table")
 
                 st.markdown("---")
                 c1, c2, c3, c4 = st.columns(4)
@@ -1934,15 +1949,17 @@ elif menu == "التقارير":
 
                 st.markdown("---")
                 st.markdown("#### 📤 تصدير التقرير")
-                df_export = df_due_display.copy()
-                df_export['إجمالي المتبقي'] = df_export['إجمالي المتبقي'].apply(lambda x: format_currency(x))
 
-                if include_past_overdue:
-                    extra_info = f"الفترة: حتى {td_due} (مع تضمين المتأخرات السابقة)"
-                else:
-                    extra_info = f"الفترة: من {fd_due} إلى {td_due}"
+                # نسخة التصدير — تحويل إجمالي المتبقي إلى نص منسق
+                df_export = df_selected.copy()
+                if 'إجمالي المتبقي' in df_export.columns:
+                    df_export['إجمالي المتبقي'] = df_export['إجمالي المتبقي'].apply(lambda x: format_currency(x))
+
+                # عنوان PDF مبسط
+                title_parts = [f"مستحقات سابقة حتى {td_due}"]
                 if rf_due != "الكل":
-                    extra_info += f" | المنطقة: {rf_due}"
+                    title_parts.append(f"المنطقة: {rf_due}")
+                pdf_title = " - ".join(title_parts)
 
                 c_exp1, c_exp2 = st.columns(2)
                 with c_exp1:
@@ -1950,12 +1967,13 @@ elif menu == "التقارير":
                     with pd.ExcelWriter(o, engine='xlsxwriter') as wr:
                         df_export.to_excel(wr, index=False, sheet_name='المستحقات')
                     st.download_button("📥 تحميل Excel", data=o.getvalue(),
-                                       file_name=f"تقرير_المستحقات_{fd_due}_{td_due}.xlsx", key="dl_due_report_xl")
+                                       file_name=f"تقرير_المستحقات_{td_due}.xlsx", key="dl_due_report_xl")
                 with c_exp2:
-                    export_df_to_pdf(df_export, "تقرير المستحقات", f"تقرير_المستحقات_{fd_due}_{td_due}.pdf",
-                                     extra_info=extra_info, landscape_mode=landscape_choice)
+                    export_df_to_pdf(df_export, pdf_title, f"تقرير_المستحقات_{td_due}.pdf",
+                                     landscape_mode=landscape_choice)
             else:
                 st.success(f"✅ لا توجد مستحقات خلال الفترة من {fd_due} إلى {td_due}")
+
 elif menu == "المستخدمون":
     st.subheader("👤 المستخدمون")
     if not has_permission(current_user_id, "المستخدمون"): st.error("لا تملك صلاحية")
