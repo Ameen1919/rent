@@ -1671,7 +1671,8 @@ elif menu == "عقود منتهية":
 
 elif menu == "التقارير":
     st.subheader("📈 التقارير")
-    if not has_permission(current_user_id, "التقارير"): st.error("لا تملك صلاحية")
+    if not has_permission(current_user_id, "التقارير"):
+        st.error("لا تملك صلاحية")
     else:
         rt = st.radio("نوع التقرير", ["كشف حساب مستأجر","دفعات بين تاريخين","الإيرادات","الضرائب","تقرير المستحقات"])
         cc = st.radio("نوع التاريخ", ["ميلادي","هجري"], horizontal=True)
@@ -1740,6 +1741,7 @@ elif menu == "التقارير":
                             export_df_to_pdf(dfe, f"كشف حساب {tn}", f"kashf_{tn}.pdf", extra_info=ei, landscape_mode=landscape_choice)
                     else:
                         conn.close(); st.warning("المستأجر لم يعد موجود")
+
         elif rt == "دفعات بين تاريخين":
             st.markdown("### تقرير الدفعات بين تاريخين")
             if cc == "هجري":
@@ -1781,6 +1783,7 @@ elif menu == "التقارير":
                 export_df_to_pdf(df, f"{title_txt} من {fd} إلى {td}", f"dues_{fd}_{td}.pdf", landscape_mode=landscape_choice)
             else:
                 st.info("لا مستحقات في هذه الفترة" if only_dues else "لا دفعات في هذه الفترة")
+
         elif rt == "الإيرادات":
             if cc == "هجري":
                 c1, c2 = st.columns(2)
@@ -1805,6 +1808,7 @@ elif menu == "التقارير":
                 st.download_button("Excel", data=o.getvalue(), file_name=f"rev_{fd}_{td}.xlsx", key="dl_rev")
                 export_df_to_pdf(df, "الإيرادات", f"rev_{fd}_{td}.pdf", landscape_mode=landscape_choice)
             else: st.info("لا إيرادات")
+
         elif rt == "الضرائب":
             if cc == "هجري":
                 c1, c2 = st.columns(2)
@@ -1843,11 +1847,11 @@ elif menu == "التقارير":
                 st.download_button("Excel", data=o.getvalue(), file_name=f"tax_{fd}_{td}.xlsx", key="dl_tax")
                 export_tax_pdf(dfd, "تقرير الضرائب", f"tax_{fd}_{td}.pdf", columns_order=sc, landscape_mode=landscape_choice)
             else: st.info("لا بيانات")
-                elif rt == "تقرير المستحقات":
+
+        elif rt == "تقرير المستحقات":
             st.markdown("### 📋 تقرير المستحقات (مجمع لكل مستأجر)")
             st.caption("يعرض كل مستأجر مرة واحدة فقط، مع أقدم دفعة غير مسددة، وعدد الدفعات المتأخرة، وإجمالي المتبقي خلال فترة محددة.")
 
-            # ====== فلتر الفترة الزمنية ======
             st.markdown("#### 📅 فترة التقرير")
             if cc == "هجري":
                 c1, c2 = st.columns(2)
@@ -1866,7 +1870,6 @@ elif menu == "التقارير":
 
             st.info(f"📆 الفترة المحددة: من **{fd_due}** إلى **{td_due}**")
 
-            # خيار إضافي: تضمين المتأخرات قبل الفترة أيضاً
             include_past_overdue = st.checkbox(
                 "☑️ تضمين الدفعات المتأخرة قبل بداية الفترة أيضاً",
                 value=True,
@@ -1874,15 +1877,12 @@ elif menu == "التقارير":
                 help="عند التفعيل: تشمل المتأخرات من قبل بداية الفترة + كل الدفعات داخل الفترة. عند الإلغاء: فقط الدفعات التي تاريخ استحقاقها داخل الفترة."
             )
 
-            # ====== فلتر المنطقة ======
             all_tenants_df = load_tenants()
             regions_list = ["الكل"] + sorted([r for r in all_tenants_df["المنطقة"].dropna().unique().tolist() if r])
             rf_due = st.selectbox("المنطقة", regions_list, key="due_report_region")
 
-            # ====== استعلام المستحقات ======
             conn = get_conn()
             if include_past_overdue:
-                # يشمل: كل المتأخرات (قبل الفترة) + الدفعات المستحقة حتى نهاية الفترة
                 q = '''SELECT t.id, t.name as tenant_name, t.region,
                        MIN(pay.due_date) as oldest_due,
                        COUNT(*) as num_payments,
@@ -1894,7 +1894,6 @@ elif menu == "التقارير":
                        AND pay.due_date <= ?'''
                 params = [td_due.isoformat()]
             else:
-                # فقط الدفعات التي تاريخ استحقاقها داخل الفترة
                 q = '''SELECT t.id, t.name as tenant_name, t.region,
                        MIN(pay.due_date) as oldest_due,
                        COUNT(*) as num_payments,
@@ -1938,7 +1937,6 @@ elif menu == "التقارير":
                 df_export = df_due_display.copy()
                 df_export['إجمالي المتبقي'] = df_export['إجمالي المتبقي'].apply(lambda x: format_currency(x))
 
-                # معلومات إضافية للـ PDF
                 if include_past_overdue:
                     extra_info = f"الفترة: حتى {td_due} (مع تضمين المتأخرات السابقة)"
                 else:
