@@ -140,7 +140,6 @@ def export_df_to_pdf(df, title, file_name, columns_order=None, extra_info=None, 
     for c in df_num.columns:
         try: df_num[c] = df_num[c].apply(parse_currency)
         except: pass
-
     numeric_cols_set = set()
     for col in df.columns:
         try:
@@ -148,16 +147,13 @@ def export_df_to_pdf(df, title, file_name, columns_order=None, extra_info=None, 
             test_series = pd.Series([x for x in test if x is not None])
             if len(test_series) > 0 and test_series.notna().all():
                 numeric_cols_set.add(col)
-        except:
-            pass
-
+        except: pass
     buf = io.BytesIO()
     pagesize = landscape(A4) if landscape_mode else A4
     c = canvas.Canvas(buf, pagesize=pagesize)
     w, h = pagesize
     fn = setup_arabic_font()
-    c.setFont(fn, 10)
-    c.setFillColor(colors.HexColor("#4A90E2"))
+    c.setFont(fn, 10); c.setFillColor(colors.HexColor("#4A90E2"))
     c.rect(0, h-30, w, 30, fill=1, stroke=0)
     c.setFillColor(colors.white); c.setFont(fn, 16)
     c.drawCentredString(w/2, h-20, reshape_arabic_text(title))
@@ -174,26 +170,16 @@ def export_df_to_pdf(df, title, file_name, columns_order=None, extra_info=None, 
         for v in df[col].tolist():
             s = format_currency(v) if isinstance(v, (int, float)) and not pd.isna(v) else (str(v) if not pd.isna(v) else "")
             max_len = max(max_len, len(reshape_arabic_text(s)))
-        if col in ['المبلغ','المدفوع','المتبقي','المبلغ شامل الضريبة','مبلغ الضريبة','المبلغ غير شامل الضريبة','الإيجار السنوي','إجمالي المتبقي']:
-            widths.append(95)
-        elif col in DATE_COLUMNS:
-            widths.append(115)
-        elif col in ['المستأجر','اسم المستأجر']:
-            widths.append(140)
-        elif col in ['العقار','اسم العقار']:
-            widths.append(120)
-        elif col in ['المنطقة']:
-            widths.append(80)
-        elif col in ['الحالة']:
-            widths.append(65)
-        elif col in ['رقم السند','رقم العقد']:
-            widths.append(90)
-        elif col in ['طريقة الدفع','طريقة السداد']:
-            widths.append(85)
-        elif col in ['عدد الدفعات المستحقة','عدد الدفعات المتأخرة']:
-            widths.append(90)
-        else:
-            widths.append(min(max(max_len * 6 + 15, 65), 130))
+        if col in ['المبلغ','المدفوع','المتبقي','المبلغ شامل الضريبة','مبلغ الضريبة','المبلغ غير شامل الضريبة','الإيجار السنوي','إجمالي المتبقي']: widths.append(95)
+        elif col in DATE_COLUMNS: widths.append(115)
+        elif col in ['المستأجر','اسم المستأجر']: widths.append(140)
+        elif col in ['العقار','اسم العقار']: widths.append(120)
+        elif col in ['المنطقة']: widths.append(80)
+        elif col in ['الحالة']: widths.append(65)
+        elif col in ['رقم السند','رقم العقد']: widths.append(90)
+        elif col in ['طريقة الدفع','طريقة السداد']: widths.append(85)
+        elif col in ['عدد الدفعات المستحقة','عدد الدفعات المتأخرة']: widths.append(90)
+        else: widths.append(min(max(max_len * 6 + 15, 65), 130))
     tw = sum(widths); max_w = w - 40
     if tw > max_w:
         sf = max_w / tw; widths = [x * sf for x in widths]; tw = max_w
@@ -215,8 +201,7 @@ def export_df_to_pdf(df, title, file_name, columns_order=None, extra_info=None, 
             vs = format_currency(v) if isinstance(v, (int, float)) and not pd.isna(v) else (str(v) if not pd.isna(v) else "")
             col_idx = cols.index(col) + 1
             cw = widths[col_idx]
-            if col in DATE_COLUMNS:
-                lines = [vs]
+            if col in DATE_COLUMNS: lines = [vs]
             else:
                 max_chars = max(int(cw / 7), 5)
                 lines = wrap_text_for_pdf(vs, max_chars)
@@ -240,20 +225,16 @@ def export_df_to_pdf(df, title, file_name, columns_order=None, extra_info=None, 
             cw = widths[i]; xr = xc; xl = xc - cw
             lines = row_lines[i-1]; start_y = y - 3
             for li, line in enumerate(lines):
-                if col in DATE_COLUMNS:
-                    c.setFont(fn, 7)
-                else:
-                    c.setFont(fn, 8)
+                if col in DATE_COLUMNS: c.setFont(fn, 7)
+                else: c.setFont(fn, 8)
                 c.drawRightString(xr - 5, start_y - li * line_height, reshape_arabic_text(line))
-            c.setFont(fn, 8)
-            xc -= cw
+            c.setFont(fn, 8); xc -= cw
         c.setStrokeColor(colors.grey); c.setLineWidth(0.5)
         c.line(xs, y+5, xs+tw, y+5); c.line(xs, y - row_height + 5, xs+tw, y - row_height + 5)
         xc = xs + tw
         for i in range(len(headers)): c.line(xc, y+5, xc, y - row_height + 5); xc -= widths[i]
         c.line(xs, y+5, xs, y - row_height + 5)
         y -= row_height
-
     c.line(xs, y+5, xs+tw, y+5); y -= 5
     c.setFillColor(colors.HexColor("#e8f0fe")); c.rect(xs, y-15, tw, 22, fill=1, stroke=0); c.setFillColor(colors.black)
     cw = widths[0]; xr = xs + tw; xl = xr - cw
@@ -315,8 +296,7 @@ def export_tax_pdf(df, title, file_name, columns_order=None, landscape_mode=True
             vs = format_currency(v) if isinstance(v, (int, float)) and not pd.isna(v) else (str(v) if not pd.isna(v) else "")
             col_idx = cols.index(col) + 1
             cw = widths[col_idx]
-            if col in ['بداية الفترة','نهاية الفترة']:
-                lines = [vs]
+            if col in ['بداية الفترة','نهاية الفترة']: lines = [vs]
             else:
                 max_chars = max(int(cw / 6.5), 5)
                 lines = wrap_text_for_pdf(vs, max_chars)
@@ -337,13 +317,10 @@ def export_tax_pdf(df, title, file_name, columns_order=None, landscape_mode=True
         for i, col in enumerate(cols, 1):
             cw = widths[i]; xr = xc; xl = xc - cw
             for li, line in enumerate(row_lines[i-1]):
-                if col in ['بداية الفترة','نهاية الفترة']:
-                    c.setFont(fn, 6.5)
-                else:
-                    c.setFont(fn, 8)
+                if col in ['بداية الفترة','نهاية الفترة']: c.setFont(fn, 6.5)
+                else: c.setFont(fn, 8)
                 c.drawRightString(xr-4, y - 3 - li*line_height, reshape_arabic_text(line))
-            c.setFont(fn, 8)
-            xc -= cw
+            c.setFont(fn, 8); xc -= cw
         c.setStrokeColor(colors.grey); c.setLineWidth(0.5)
         c.line(xs, y+5, xs+tw, y+5); c.line(xs, y-row_height+5, xs+tw, y-row_height+5)
         xc = xs + tw
@@ -656,7 +633,7 @@ def create_payment_schedule(cid, tid, sd, ed, ra, im):
     return cnt
 
 def create_payment_schedule_inline(cur, cid, tid, sd, ed, ra, im):
-    """نسخة داخلية تستخدم cursor موجود — بدون فتح اتصال جديد (تجنب Database is locked)"""
+    """نسخة داخلية تستخدم cursor موجود — بدون فتح اتصال جديد (حل Database is locked)"""
     step = relativedelta(months=im); cur_d = sd
     cnt = 0
     while cur_d <= ed:
@@ -843,24 +820,84 @@ def import_properties_from_excel(f):
 
 def import_contracts_from_excel(f):
     try:
-        df = pd.read_excel(f)
+        df = pd.read_excel(f, sheet_name=0)
         for col in ["اسم المستأجر","اسم العقار","تاريخ البداية","تاريخ النهاية"]:
-            if col not in df.columns: st.error(f"يجب أن يحتوي الملف على عمود '{col}'"); return
+            if col not in df.columns:
+                st.error(f"يجب أن يحتوي الملف على عمود '{col}'")
+                return
         conn = get_conn(); cur = conn.cursor()
-        td = {r[1]: r[0] for r in cur.execute("SELECT id, name FROM tenants").fetchall()}
-        pd_ = {r[1]: r[0] for r in cur.execute("SELECT id, name FROM properties").fetchall()}
+        tenants_data = cur.execute("SELECT id, name FROM tenants").fetchall()
+        properties_data = cur.execute("SELECT id, name FROM properties").fetchall()
+        tenant_by_id = {t[0]: t[1] for t in tenants_data}
+        prop_by_id = {p[0]: p[1] for p in properties_data}
+        tenant_name_count = {}
+        tenant_name_to_id = {}
+        for t in tenants_data:
+            tenant_name_count[t[1]] = tenant_name_count.get(t[1], 0) + 1
+            if t[1] not in tenant_name_to_id:
+                tenant_name_to_id[t[1]] = t[0]
+        prop_name_count = {}
+        prop_name_to_id = {}
+        for p in properties_data:
+            prop_name_count[p[1]] = prop_name_count.get(p[1], 0) + 1
+            if p[1] not in prop_name_to_id:
+                prop_name_to_id[p[1]] = p[0]
+
         imp = 0
         errors = []
+        has_tenant_id_col = "رقم المستأجر" in df.columns
+        has_prop_id_col = "رقم العقار" in df.columns
+
         for idx, row in df.iterrows():
             try:
-                tn = str(row["اسم المستأجر"]).strip(); pn = str(row["اسم العقار"]).strip()
-                if tn not in td or pn not in pd_:
-                    errors.append(f"صف {idx+2}: المستأجر أو العقار غير موجود")
-                    continue
-                sd = pd.to_datetime(row["تاريخ البداية"]).date(); ed = pd.to_datetime(row["تاريخ النهاية"]).date()
+                tid = None
+                if has_tenant_id_col:
+                    tid_val = row.get("رقم المستأجر", None)
+                    if pd.notna(tid_val) and str(tid_val).strip() != "":
+                        try:
+                            tid = int(float(tid_val))
+                            if tid not in tenant_by_id:
+                                errors.append(f"صف {idx+2}: رقم المستأجر {tid} غير موجود")
+                                continue
+                        except:
+                            tid = None
+                if not tid:
+                    tn = str(row["اسم المستأجر"]).strip()
+                    if tn not in tenant_name_to_id:
+                        errors.append(f"صف {idx+2}: المستأجر '{tn}' غير موجود")
+                        continue
+                    if tenant_name_count.get(tn, 0) > 1:
+                        errors.append(f"صف {idx+2}: يوجد {tenant_name_count[tn]} مستأجرين بنفس الاسم '{tn}' — الرجاء استخدام 'رقم المستأجر'")
+                        continue
+                    tid = tenant_name_to_id[tn]
+
+                pid = None
+                if has_prop_id_col:
+                    pid_val = row.get("رقم العقار", None)
+                    if pd.notna(pid_val) and str(pid_val).strip() != "":
+                        try:
+                            pid = int(float(pid_val))
+                            if pid not in prop_by_id:
+                                errors.append(f"صف {idx+2}: رقم العقار {pid} غير موجود")
+                                continue
+                        except:
+                            pid = None
+                if not pid:
+                    pn = str(row["اسم العقار"]).strip()
+                    if pn not in prop_name_to_id:
+                        errors.append(f"صف {idx+2}: العقار '{pn}' غير موجود")
+                        continue
+                    if prop_name_count.get(pn, 0) > 1:
+                        errors.append(f"صف {idx+2}: يوجد {prop_name_count[pn]} عقارات بنفس الاسم '{pn}' — الرجاء استخدام 'رقم العقار'")
+                        continue
+                    pid = prop_name_to_id[pn]
+
+                sd = pd.to_datetime(row["تاريخ البداية"]).date()
+                ed = pd.to_datetime(row["تاريخ النهاية"]).date()
                 if sd >= ed:
                     errors.append(f"صف {idx+2}: تاريخ البداية بعد النهاية")
                     continue
+
                 cnum = str(row.get("رقم العقد","")).strip() if "رقم العقد" in df.columns else ""
                 if not cnum:
                     cnum = generate_contract_number()
@@ -869,30 +906,34 @@ def import_contracts_from_excel(f):
                     if ex:
                         errors.append(f"صف {idx+2}: رقم العقد '{cnum}' مكرر — تم تجاهله")
                         continue
+
                 ra = safe_float(row.get("قيمة الإيجار السنوي", 0))
                 im = int(row.get("دورية السداد (شهور)", 1)) if "دورية السداد (شهور)" in df.columns else 1
                 da = safe_float(row.get("التأمين", 0))
                 ti = 1 if row.get("شامل الضريبة", False) else 0
                 tr = safe_float(row.get("نسبة الضريبة", 0.15))
                 nt = str(row.get("ملاحظات","")).strip() if "ملاحظات" in df.columns else ""
+
                 cur.execute('''INSERT INTO contracts (tenant_id, property_id, contract_number, start_date, end_date,
                     rent_amount, interval_months, deposit_amount, notes, tax_included, tax_rate)
                     VALUES (?,?,?,?,?,?,?,?,?,?,?)''',
-                    (td[tn], pd_[pn], cnum, sd.isoformat(), ed.isoformat(), ra, im, da, nt, ti, tr))
+                    (tid, pid, cnum, sd.isoformat(), ed.isoformat(), ra, im, da, nt, ti, tr))
                 cid = cur.lastrowid
-                create_payment_schedule_inline(cur, cid, td[tn], sd, ed, ra, im)
+                create_payment_schedule_inline(cur, cid, tid, sd, ed, ra, im)
                 imp += 1
                 if imp % 10 == 0:
                     conn.commit()
             except Exception as e:
                 errors.append(f"صف {idx+2}: {str(e)}")
+
         conn.commit(); conn.close(); st.cache_data.clear()
         msg = f"✅ تم استيراد {imp} عقد"
         if errors: msg += f" — فشل {len(errors)} صف"
         st.toast(msg, icon="✅")
         if errors:
-            with st.expander("عرض الأخطاء"):
-                for er in errors[:20]: st.text(er)
+            with st.expander(f"⚠️ عرض الأخطاء ({len(errors)})", expanded=True):
+                for er in errors[:30]:
+                    st.text(er)
     except Exception as e:
         st.error(f"خطأ: {e}")
 
@@ -1040,8 +1081,7 @@ def create_compressed_backup():
         try: os.remove(compressed_path)
         except: pass
         return compressed_data, original_size, compressed_size
-    except Exception as e:
-        return None, 0, 0
+    except: return None, 0, 0
 
 def split_into_chunks(data, chunk_size):
     return [data[i:i + chunk_size] for i in range(0, len(data), chunk_size)]
@@ -1049,11 +1089,11 @@ def split_into_chunks(data, chunk_size):
 def download_file_from_telegram(token, file_id):
     info_url = f"https://api.telegram.org/bot{token}/getFile?file_id={file_id}"
     resp = requests.get(info_url, timeout=60).json()
-    if not resp.get('ok'): raise Exception(f"فشل جلب معلومات الملف: {resp}")
+    if not resp.get('ok'): raise Exception(f"فشل: {resp}")
     file_path = resp['result']['file_path']
     download_url = f"https://api.telegram.org/file/bot{token}/{file_path}"
     db_resp = requests.get(download_url, timeout=300)
-    if db_resp.status_code != 200: raise Exception(f"فشل تحميل الملف: {db_resp.status_code}")
+    if db_resp.status_code != 200: raise Exception(f"فشل: {db_resp.status_code}")
     return db_resp.content
 
 def restore_from_compressed(compressed_data):
@@ -1250,13 +1290,25 @@ elif menu == "إدارة البيانات":
             st.subheader("📄 العقود")
             ci1, ci2 = st.columns(2)
             with ci1:
-                df = pd.DataFrame(columns=["رقم العقد","اسم المستأجر","اسم العقار","تاريخ البداية","تاريخ النهاية","قيمة الإيجار السنوي","دورية السداد (شهور)","التأمين","شامل الضريبة","نسبة الضريبة","ملاحظات"])
-                df.loc[0] = ["CTR-2025-001","أحمد","عمارة","2025-01-01","2025-12-31",60000,6,5000,0,0.15,""]
+                conn = get_conn(); cur = conn.cursor()
+                tenants_list = cur.execute("SELECT id, name, region FROM tenants ORDER BY name").fetchall()
+                props_list = cur.execute("SELECT id, name, region FROM properties ORDER BY name").fetchall()
+                conn.close()
+                df = pd.DataFrame(columns=["رقم العقد","رقم المستأجر","اسم المستأجر","رقم العقار","اسم العقار",
+                                            "تاريخ البداية","تاريخ النهاية","قيمة الإيجار السنوي",
+                                            "دورية السداد (شهور)","التأمين","شامل الضريبة","نسبة الضريبة","ملاحظات"])
+                df.loc[0] = ["CTR-2025-001","","أحمد","","عمارة","2025-01-01","2025-12-31",60000,6,5000,0,0.15,""]
                 o = io.BytesIO()
-                with pd.ExcelWriter(o, engine='xlsxwriter') as wr: df.to_excel(wr, index=False, sheet_name='العقود')
+                with pd.ExcelWriter(o, engine='xlsxwriter') as wr:
+                    df.to_excel(wr, index=False, sheet_name='العقود')
+                    if tenants_list:
+                        pd.DataFrame(tenants_list, columns=["رقم المستأجر","اسم المستأجر","المنطقة"]).to_excel(wr, index=False, sheet_name='المستأجرين')
+                    if props_list:
+                        pd.DataFrame(props_list, columns=["رقم العقار","اسم العقار","المنطقة"]).to_excel(wr, index=False, sheet_name='العقارات')
                 o.seek(0)
-                st.download_button("تحميل قالب", data=o.getvalue(), file_name="قالب_العقود.xlsx",
+                st.download_button("تحميل قالب العقود", data=o.getvalue(), file_name="قالب_العقود.xlsx",
                                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", key="dl_tmpl_c")
+                st.caption("💡 القالب يحتوي على 3 أوراق: العقود + المستأجرين + العقارات")
             with ci2:
                 uf = st.file_uploader("استيراد", type=["xlsx","xls"], key="imp_c")
                 if uf and st.button("تنفيذ", key="btn_imp_c"): import_contracts_from_excel(uf); st.rerun()
@@ -1309,19 +1361,12 @@ elif menu == "إدارة البيانات":
                 if tfc != "الكل": fc = fc[fc["اسم المستأجر"]==tfc]
                 if not fc.empty:
                     fc = fc.reset_index(drop=True)
-
-                    # ===== ترقيم متسلسل للعرض فقط (1, 2, 3...) =====
                     fc_show = fc.copy()
                     fc_show["الرقم"] = range(1, len(fc_show) + 1)
-
                     display_dataframe_with_reorder(fc_show, "contracts")
-
-                    # خيارات الاختيار — نستخدم الرقم الحقيقي للحفظ لكن نعرض الرقم المتسلسل
                     c_options = {}
                     for i, row in fc.iterrows():
-                        display_num = i + 1
-                        c_options[row['الرقم']] = f"{display_num} - {row['رقم العقد']} - {row['اسم المستأجر']}"
-
+                        c_options[row['الرقم']] = f"{i+1} - {row['رقم العقد']} - {row['اسم المستأجر']}"
                     cid = st.selectbox("اختر عقد", options=list(c_options.keys()),
                                        format_func=lambda x: c_options[x], key="sel_contract")
                     if cid:
@@ -1493,7 +1538,7 @@ elif menu == "الدفعات":
                         region_names = ["الكل"] + sorted([r for r in dfp["المنطقة"].dropna().unique().tolist() if r])
                         sel_region = st.selectbox("المنطقة", region_names, key="pe_region")
                     with f3:
-                        search_pay = st.text_input("بحث (اسم المستأجر/العقار/الحالة)", key="pe_search")
+                        search_pay = st.text_input("بحث", key="pe_search")
                     dfp_f = dfp.copy()
                     if sel_tenant != "الكل": dfp_f = dfp_f[dfp_f["المستأجر"] == sel_tenant]
                     if sel_region != "الكل": dfp_f = dfp_f[dfp_f["المنطقة"] == sel_region]
@@ -1503,7 +1548,7 @@ elif menu == "الدفعات":
                                                       search_pay.lower() in str(row.get("الحالة","")).lower(), axis=1)
                         dfp_f = dfp_f[mask]
                     if dfp_f.empty:
-                        st.info("لا نتائج مطابقة للفلاتر")
+                        st.info("لا نتائج")
                     else:
                         st.markdown(f"**عدد النتائج:** {len(dfp_f)}")
                         dfp_show = dfp_f[["الرقم","المستأجر","العقار","تاريخ الاستحقاق","المبلغ","المدفوع","المتبقي","الحالة","تاريخ السداد"]].copy()
@@ -1587,7 +1632,7 @@ elif menu == "سندات القبض":
                     regions = ["الكل"] + sorted([r for r in dfr["المنطقة"].dropna().unique().tolist() if r])
                     sel_region = st.selectbox("المنطقة", regions, key="flt_rec_region")
                 with f3:
-                    search_txt = st.text_input("بحث برقم السند أو الملاحظات", key="flt_rec_search")
+                    search_txt = st.text_input("بحث", key="flt_rec_search")
                 dfr_f = dfr.copy()
                 if sel_tenant != "الكل": dfr_f = dfr_f[dfr_f["المستأجر"] == sel_tenant]
                 if sel_region != "الكل": dfr_f = dfr_f[dfr_f["المنطقة"] == sel_region]
@@ -1678,7 +1723,7 @@ elif menu == "عقود منتهية":
                 st.markdown("---")
                 mode = st.radio("طريقة الإضافة", ["📋 جدول دفعات مؤقت (مثل العقد)", "➕ دفعة واحدة فقط"], horizontal=True, key=f"mode_{sel}")
                 if mode == "📋 جدول دفعات مؤقت (مثل العقد)":
-                    st.markdown("#### توليد جدول دفعات مؤقت بنفس منطق العقد")
+                    st.markdown("#### توليد جدول دفعات مؤقت")
                     with st.form(f"temp_schedule_f_{sel}"):
                         c1, c2 = st.columns(2)
                         with c1: sd = st.date_input("من تاريخ", value=date.today())
@@ -1742,7 +1787,7 @@ elif menu == "التقارير":
         rt = st.radio("نوع التقرير", ["كشف حساب مستأجر","دفعات بين تاريخين","الإيرادات","الضرائب","تقرير المستحقات"])
         cc = st.radio("نوع التاريخ", ["ميلادي","هجري"], horizontal=True)
         st.markdown("### 📄 خيارات الطباعة")
-        orient_choice = st.radio("اتجاه الصفحة عند الطباعة", ["عمودي (Portrait)", "أفقي (Landscape)"], horizontal=True, key="report_orientation")
+        orient_choice = st.radio("اتجاه الصفحة", ["عمودي (Portrait)", "أفقي (Landscape)"], horizontal=True, key="report_orientation")
         landscape_choice = (orient_choice == "أفقي (Landscape)")
 
         if rt == "كشف حساب مستأجر":
@@ -1806,7 +1851,6 @@ elif menu == "التقارير":
                             export_df_to_pdf(dfe, f"كشف حساب {tn}", f"kashf_{tn}.pdf", extra_info=ei, landscape_mode=landscape_choice)
                     else:
                         conn.close(); st.warning("المستأجر لم يعد موجود")
-
         elif rt == "دفعات بين تاريخين":
             st.markdown("### تقرير الدفعات بين تاريخين")
             if cc == "هجري":
@@ -1819,7 +1863,7 @@ elif menu == "التقارير":
                 c1, c2 = st.columns(2)
                 fd = c1.date_input("من", value=date.today().replace(day=1), key="dd_d1")
                 td = c2.date_input("إلى", value=date.today(), key="dd_d2")
-            only_dues = st.checkbox("💵 عرض المستحقات فقط (كل دفعة عليها مبلغ متبقي ولو جزئي)", value=False, key="only_dues_chk")
+            only_dues = st.checkbox("💵 عرض المستحقات فقط", value=False, key="only_dues_chk")
             tf = st.selectbox("مستأجر", ["الكل"] + load_tenants()["الاسم"].tolist(), key="dd_tf")
             rf = st.selectbox("المنطقة", ["الكل"] + load_tenants()["المنطقة"].dropna().unique().tolist(), key="dd_rf")
             conn = get_conn(); cur = conn.cursor()
@@ -1848,7 +1892,6 @@ elif menu == "التقارير":
                 export_df_to_pdf(df, f"{title_txt} من {fd} إلى {td}", f"dues_{fd}_{td}.pdf", landscape_mode=landscape_choice)
             else:
                 st.info("لا مستحقات في هذه الفترة" if only_dues else "لا دفعات في هذه الفترة")
-
         elif rt == "الإيرادات":
             if cc == "هجري":
                 c1, c2 = st.columns(2)
@@ -1873,7 +1916,6 @@ elif menu == "التقارير":
                 st.download_button("Excel", data=o.getvalue(), file_name=f"rev_{fd}_{td}.xlsx", key="dl_rev")
                 export_df_to_pdf(df, "الإيرادات", f"rev_{fd}_{td}.pdf", landscape_mode=landscape_choice)
             else: st.info("لا إيرادات")
-
         elif rt == "الضرائب":
             if cc == "هجري":
                 c1, c2 = st.columns(2)
@@ -1912,111 +1954,77 @@ elif menu == "التقارير":
                 st.download_button("Excel", data=o.getvalue(), file_name=f"tax_{fd}_{td}.xlsx", key="dl_tax")
                 export_tax_pdf(dfd, "تقرير الضرائب", f"tax_{fd}_{td}.pdf", columns_order=sc, landscape_mode=landscape_choice)
             else: st.info("لا بيانات")
-
         elif rt == "تقرير المستحقات":
             st.markdown("### 📋 تقرير المستحقات (مجمع لكل مستأجر)")
-            st.caption("يعرض كل مستأجر مرة واحدة فقط، مع أقدم دفعة غير مسددة، وعدد الدفعات المتأخرة، وإجمالي المتبقي خلال فترة محددة.")
-
+            st.caption("يعرض كل مستأجر مرة واحدة مع أقدم دفعة غير مسددة وعدد الدفعات المتأخرة وإجمالي المتبقي.")
             st.markdown("#### 📅 فترة التقرير")
             if cc == "هجري":
                 c1, c2 = st.columns(2)
                 hi1 = c1.text_input("من تاريخ هجري", "01-01-1445", key="due_h1")
                 hi2 = c2.text_input("إلى تاريخ هجري", "30-12-1445", key="due_h2")
                 try:
-                    fd_due = hijri_to_gregorian(hi1)
-                    td_due = hijri_to_gregorian(hi2)
+                    fd_due = hijri_to_gregorian(hi1); td_due = hijri_to_gregorian(hi2)
                 except:
-                    st.error("صيغة التاريخ الهجري غير صحيحة")
-                    st.stop()
+                    st.error("صيغة التاريخ الهجري غير صحيحة"); st.stop()
             else:
                 c1, c2 = st.columns(2)
                 fd_due = c1.date_input("من تاريخ", value=date.today().replace(day=1), key="due_d1")
                 td_due = c2.date_input("إلى تاريخ", value=date.today() + relativedelta(years=1), key="due_d2")
-
             st.info(f"📆 الفترة المحددة: من **{fd_due}** إلى **{td_due}**")
-
-            include_past_overdue = st.checkbox(
-                "☑️ تضمين الدفعات المتأخرة قبل بداية الفترة أيضاً",
-                value=True,
-                key="due_include_past"
-            )
-
+            include_past_overdue = st.checkbox("☑️ تضمين الدفعات المتأخرة قبل بداية الفترة", value=True, key="due_include_past")
             all_tenants_df = load_tenants()
             regions_list = ["الكل"] + sorted([r for r in all_tenants_df["المنطقة"].dropna().unique().tolist() if r])
             rf_due = st.selectbox("المنطقة", regions_list, key="due_report_region")
-
             conn = get_conn()
             if include_past_overdue:
-                q = '''SELECT t.id, t.name as tenant_name, t.region,
-                       MIN(pay.due_date) as oldest_due,
+                q = '''SELECT t.id, t.name as tenant_name, t.region, MIN(pay.due_date) as oldest_due,
                        COUNT(*) as num_payments,
                        SUM(CASE WHEN pay.due_date < date('now') THEN 1 ELSE 0 END) as num_overdue,
                        SUM(pay.amount - pay.paid_amount) as total_remaining
-                       FROM payments pay
-                       JOIN tenants t ON pay.tenant_id = t.id
-                       WHERE (pay.amount - pay.paid_amount) > 0
-                       AND pay.due_date <= ?'''
+                       FROM payments pay JOIN tenants t ON pay.tenant_id = t.id
+                       WHERE (pay.amount - pay.paid_amount) > 0 AND pay.due_date <= ?'''
                 params = [td_due.isoformat()]
             else:
-                q = '''SELECT t.id, t.name as tenant_name, t.region,
-                       MIN(pay.due_date) as oldest_due,
+                q = '''SELECT t.id, t.name as tenant_name, t.region, MIN(pay.due_date) as oldest_due,
                        COUNT(*) as num_payments,
                        SUM(CASE WHEN pay.due_date < date('now') THEN 1 ELSE 0 END) as num_overdue,
                        SUM(pay.amount - pay.paid_amount) as total_remaining
-                       FROM payments pay
-                       JOIN tenants t ON pay.tenant_id = t.id
-                       WHERE (pay.amount - pay.paid_amount) > 0
-                       AND pay.due_date BETWEEN ? AND ?'''
+                       FROM payments pay JOIN tenants t ON pay.tenant_id = t.id
+                       WHERE (pay.amount - pay.paid_amount) > 0 AND pay.due_date BETWEEN ? AND ?'''
                 params = [fd_due.isoformat(), td_due.isoformat()]
-
             if rf_due != "الكل":
-                q += " AND t.region = ?"
-                params.append(rf_due)
-
+                q += " AND t.region = ?"; params.append(rf_due)
             q += " GROUP BY t.id, t.name, t.region ORDER BY oldest_due ASC, t.name"
             df_due = pd.read_sql_query(q, conn, params=params)
             conn.close()
-
             if not df_due.empty:
                 df_due_display = df_due.rename(columns={
-                    'tenant_name': 'المستأجر',
-                    'region': 'المنطقة',
-                    'oldest_due': 'أقدم دفعة غير مسددة',
-                    'num_payments': 'عدد الدفعات المستحقة',
-                    'num_overdue': 'عدد الدفعات المتأخرة',
+                    'tenant_name': 'المستأجر','region': 'المنطقة','oldest_due': 'أقدم دفعة غير مسددة',
+                    'num_payments': 'عدد الدفعات المستحقة','num_overdue': 'عدد الدفعات المتأخرة',
                     'total_remaining': 'إجمالي المتبقي'
                 })
                 df_due_display = df_due_display[['المستأجر','المنطقة','أقدم دفعة غير مسددة','عدد الدفعات المستحقة','عدد الدفعات المتأخرة','إجمالي المتبقي']]
-
                 df_selected, selected_cols = display_dataframe_with_reorder(df_due_display, "due_report_table")
-
                 st.markdown("---")
                 c1, c2, c3, c4 = st.columns(4)
                 c1.metric("عدد المستأجرين المديونين", len(df_due))
                 c2.metric("إجمالي الدفعات المستحقة", f"{int(df_due['num_payments'].sum())} دفعة")
                 c3.metric("إجمالي الدفعات المتأخرة", f"{int(df_due['num_overdue'].sum())} دفعة")
                 c4.metric("💵 إجمالي المبالغ المتبقية", format_currency(df_due['total_remaining'].sum()))
-
                 st.markdown("---")
                 st.markdown("#### 📤 تصدير التقرير")
-
                 df_export = df_selected.copy()
-
                 title_parts = [f"مستحقات سابقة حتى {td_due}"]
-                if rf_due != "الكل":
-                    title_parts.append(f"المنطقة: {rf_due}")
+                if rf_due != "الكل": title_parts.append(f"المنطقة: {rf_due}")
                 pdf_title = " - ".join(title_parts)
-
                 c_exp1, c_exp2 = st.columns(2)
                 with c_exp1:
                     o = io.BytesIO()
                     with pd.ExcelWriter(o, engine='xlsxwriter') as wr:
                         df_export.to_excel(wr, index=False, sheet_name='المستحقات')
-                    st.download_button("📥 تحميل Excel", data=o.getvalue(),
-                                       file_name=f"تقرير_المستحقات_{td_due}.xlsx", key="dl_due_report_xl")
+                    st.download_button("📥 تحميل Excel", data=o.getvalue(), file_name=f"تقرير_المستحقات_{td_due}.xlsx", key="dl_due_report_xl")
                 with c_exp2:
-                    export_df_to_pdf(df_export, pdf_title, f"تقرير_المستحقات_{td_due}.pdf",
-                                     landscape_mode=landscape_choice)
+                    export_df_to_pdf(df_export, pdf_title, f"تقرير_المستحقات_{td_due}.pdf", landscape_mode=landscape_choice)
             else:
                 st.success(f"✅ لا توجد مستحقات خلال الفترة من {fd_due} إلى {td_due}")
 
@@ -2092,9 +2100,7 @@ elif menu == "نسخ احتياطي":
         st.info("""
         ℹ️ **حدود Telegram Bot API:**
         - الرفع: حتى **50 ميجابايت** | التحميل: حتى **20 ميجابايت**
-        
         ✅ النظام يقوم **بضغط قاعدة البيانات تلقائياً** قبل الرفع.
-        إذا استمر الحجم أكبر من 50 ميجا، سيتم **تقسيم الملف تلقائياً**.
         """)
         st.markdown("---")
         c1, c2 = st.columns(2)
@@ -2116,7 +2122,6 @@ elif menu == "نسخ احتياطي":
             except FileNotFoundError: st.warning("لا توجد قاعدة بيانات")
         with c2:
             st.markdown("### 📤 استعادة نسخة محلية")
-            st.caption("اختر ملف .db أو .db.gz")
             uf = st.file_uploader("اختر ملف النسخة", type=["db", "sqlite", "gz"], key="restore_up")
             if uf:
                 file_bytes = uf.read(); file_name = uf.name.lower()
@@ -2144,12 +2149,12 @@ elif menu == "نسخ احتياطي":
             if compressed_data:
                 comp_mb = comp_size / (1024 * 1024); orig_mb = orig_size / (1024 * 1024)
                 st.markdown(f"**حجم قاعدة البيانات الحالي:** {orig_mb:.2f} MB | **بعد الضغط:** {comp_mb:.2f} MB")
-                if comp_mb <= 20: st.success(f"✅ الحجم أقل من 20 ميجا - الرفع والاستعادة سيعملان بسلاسة")
-                elif comp_mb <= 50: st.warning(f"⚠️ الحجم بين 20 و 50 ميجا - سيتم تقسيم الملف تلقائياً")
+                if comp_mb <= 20: st.success(f"✅ الحجم أقل من 20 ميجا")
+                elif comp_mb <= 50: st.warning(f"⚠️ الحجم بين 20 و 50 ميجا - سيتم تقسيم الملف")
                 else: st.warning(f"⚠️ الحجم أكبر من 50 ميجا - سيتم تقسيم الملف")
             col_up, col_down = st.columns(2)
             with col_up:
-                st.markdown("### ⬆️ رفع النسخة إلى تيليجرام")
+                st.markdown("### ⬆️ رفع النسخة")
                 if st.button("🚀 رفع النسخة المضغوطة", key="btn_tg_up", use_container_width=True):
                     with st.spinner("جاري الرفع..."):
                         try:
