@@ -1843,28 +1843,77 @@ elif menu == "التقارير":
                 st.download_button("Excel", data=o.getvalue(), file_name=f"tax_{fd}_{td}.xlsx", key="dl_tax")
                 export_tax_pdf(dfd, "تقرير الضرائب", f"tax_{fd}_{td}.pdf", columns_order=sc, landscape_mode=landscape_choice)
             else: st.info("لا بيانات")
-        elif rt == "تقرير المستحقات":
+                elif rt == "تقرير المستحقات":
             st.markdown("### 📋 تقرير المستحقات (مجمع لكل مستأجر)")
-            st.caption("يعرض كل مستأجر مرة واحدة فقط، مع أقدم دفعة غير مسددة، وعدد الدفعات المتأخرة، وإجمالي المتبقي.")
+            st.caption("يعرض كل مستأجر مرة واحدة فقط، مع أقدم دفعة غير مسددة، وعدد الدفعات المتأخرة، وإجمالي المتبقي خلال فترة محددة.")
+
+            # ====== فلتر الفترة الزمنية ======
+            st.markdown("#### 📅 فترة التقرير")
+            if cc == "هجري":
+                c1, c2 = st.columns(2)
+                hi1 = c1.text_input("من تاريخ هجري", "01-01-1445", key="due_h1")
+                hi2 = c2.text_input("إلى تاريخ هجري", "30-12-1445", key="due_h2")
+                try:
+                    fd_due = hijri_to_gregorian(hi1)
+                    td_due = hijri_to_gregorian(hi2)
+                except:
+                    st.error("صيغة التاريخ الهجري غير صحيحة")
+                    st.stop()
+            else:
+                c1, c2 = st.columns(2)
+                fd_due = c1.date_input("من تاريخ", value=date.today().replace(day=1), key="due_d1")
+                td_due = c2.date_input("إلى تاريخ", value=date.today() + relativedelta(years=1), key="due_d2")
+
+            st.info(f"📆 الفترة المحددة: من **{fd_due}** إلى **{td_due}**")
+
+            # خيار إضافي: تضمين المتأخرات قبل الفترة أيضاً
+            include_past_overdue = st.checkbox(
+                "☑️ تضمين الدفعات المتأخرة قبل بداية الفترة أيضاً",
+                value=True,
+                key="due_include_past",
+                help="عند التفعيل: تشمل المتأخرات من قبل بداية الفترة + كل الدفعات داخل الفترة. عند الإلغاء: فقط الدفعات التي تاريخ استحقاقها داخل الفترة."
+            )
+
+            # ====== فلتر المنطقة ======
             all_tenants_df = load_tenants()
             regions_list = ["الكل"] + sorted([r for r in all_tenants_df["المنطقة"].dropna().unique().tolist() if r])
             rf_due = st.selectbox("المنطقة", regions_list, key="due_report_region")
+
+            # ====== استعلام المستحقات ======
             conn = get_conn()
-            q = '''SELECT t.id, t.name as tenant_name, t.region,
-                   MIN(pay.due_date) as oldest_due,
-                   COUNT(*) as num_payments,
-                   SUM(CASE WHEN pay.due_date < date('now') THEN 1 ELSE 0 END) as num_overdue,
-                   SUM(pay.amount - pay.paid_amount) as total_remaining
-                   FROM payments pay
-                   JOIN tenants t ON pay.tenant_id = t.id
-                   WHERE (pay.amount - pay.paid_amount) > 0'''
-            params = []
+            if include_past_overdue:
+                # يشمل: كل المتأخرات (قبل الفترة) + الدفعات المستحقة حتى نهاية الفترة
+                q = '''SELECT t.id, t.name as tenant_name, t.region,
+                       MIN(pay.due_date) as oldest_due,
+                       COUNT(*) as num_payments,
+                       SUM(CASE WHEN pay.due_date < date('now') THEN 1 ELSE 0 END) as num_overdue,
+                       SUM(pay.amount - pay.paid_amount) as total_remaining
+                       FROM payments pay
+                       JOIN tenants t ON pay.tenant_id = t.id
+                       WHERE (pay.amount - pay.paid_amount) > 0
+                       AND pay.due_date <= ?'''
+                params = [td_due.isoformat()]
+            else:
+                # فقط الدفعات التي تاريخ استحقاقها داخل الفترة
+                q = '''SELECT t.id, t.name as tenant_name, t.region,
+                       MIN(pay.due_date) as oldest_due,
+                       COUNT(*) as num_payments,
+                       SUM(CASE WHEN pay.due_date < date('now') THEN 1 ELSE 0 END) as num_overdue,
+                       SUM(pay.amount - pay.paid_amount) as total_remaining
+                       FROM payments pay
+                       JOIN tenants t ON pay.tenant_id = t.id
+                       WHERE (pay.amount - pay.paid_amount) > 0
+                       AND pay.due_date BETWEEN ? AND ?'''
+                params = [fd_due.isoformat(), td_due.isoformat()]
+
             if rf_due != "الكل":
                 q += " AND t.region = ?"
                 params.append(rf_due)
+
             q += " GROUP BY t.id, t.name, t.region ORDER BY oldest_due ASC, t.name"
             df_due = pd.read_sql_query(q, conn, params=params)
             conn.close()
+
             if not df_due.empty:
                 df_due_display = df_due.rename(columns={
                     'tenant_name': 'المستأجر',
@@ -1876,29 +1925,39 @@ elif menu == "التقارير":
                 })
                 df_due_display = df_due_display[['المستأجر','المنطقة','أقدم دفعة غير مسددة','عدد الدفعات المستحقة','عدد الدفعات المتأخرة','إجمالي المتبقي']]
                 display_dataframe_with_reorder(df_due_display, "due_report_table")
+
                 st.markdown("---")
                 c1, c2, c3, c4 = st.columns(4)
                 c1.metric("عدد المستأجرين المديونين", len(df_due))
                 c2.metric("إجمالي الدفعات المستحقة", f"{int(df_due['num_payments'].sum())} دفعة")
                 c3.metric("إجمالي الدفعات المتأخرة", f"{int(df_due['num_overdue'].sum())} دفعة")
                 c4.metric("💵 إجمالي المبالغ المتبقية", format_currency(df_due['total_remaining'].sum()))
+
                 st.markdown("---")
                 st.markdown("#### 📤 تصدير التقرير")
                 df_export = df_due_display.copy()
                 df_export['إجمالي المتبقي'] = df_export['إجمالي المتبقي'].apply(lambda x: format_currency(x))
+
+                # معلومات إضافية للـ PDF
+                if include_past_overdue:
+                    extra_info = f"الفترة: حتى {td_due} (مع تضمين المتأخرات السابقة)"
+                else:
+                    extra_info = f"الفترة: من {fd_due} إلى {td_due}"
+                if rf_due != "الكل":
+                    extra_info += f" | المنطقة: {rf_due}"
+
                 c_exp1, c_exp2 = st.columns(2)
                 with c_exp1:
                     o = io.BytesIO()
                     with pd.ExcelWriter(o, engine='xlsxwriter') as wr:
                         df_export.to_excel(wr, index=False, sheet_name='المستحقات')
                     st.download_button("📥 تحميل Excel", data=o.getvalue(),
-                                       file_name=f"تقرير_المستحقات_{date.today()}.xlsx", key="dl_due_report_xl")
+                                       file_name=f"تقرير_المستحقات_{fd_due}_{td_due}.xlsx", key="dl_due_report_xl")
                 with c_exp2:
-                    export_df_to_pdf(df_export, "تقرير المستحقات", f"تقرير_المستحقات_{date.today()}.pdf",
-                                     landscape_mode=landscape_choice)
+                    export_df_to_pdf(df_export, "تقرير المستحقات", f"تقرير_المستحقات_{fd_due}_{td_due}.pdf",
+                                     extra_info=extra_info, landscape_mode=landscape_choice)
             else:
-                st.success("✅ لا توجد مستحقات في الوقت الحالي — جميع الدفعات مسددة بالكامل")
-
+                st.success(f"✅ لا توجد مستحقات خلال الفترة من {fd_due} إلى {td_due}")
 elif menu == "المستخدمون":
     st.subheader("👤 المستخدمون")
     if not has_permission(current_user_id, "المستخدمون"): st.error("لا تملك صلاحية")
