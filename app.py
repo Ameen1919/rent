@@ -48,6 +48,9 @@ st.markdown("""
 def safe_float(value, default=0.0):
     try:
         if value is None or pd.isna(value): return default
+        if isinstance(value, str):
+            value = value.replace(',', '').strip()
+            if value == '': return default
         return float(value)
     except (TypeError, ValueError): return default
 
@@ -138,12 +141,13 @@ def export_df_to_pdf(df, title, file_name, columns_order=None, extra_info=None, 
         try: df_num[c] = df_num[c].apply(parse_currency)
         except: pass
 
-    # تحديد الأعمدة الرقمية فقط
+    # تحديد الأعمدة الرقمية
     numeric_cols_set = set()
     for col in df.columns:
         try:
-            test = pd.to_numeric(df[col].astype(str).str.replace(',', ''), errors='coerce')
-            if test.notna().any():
+            test = df[col].apply(lambda x: safe_float(x, None) if x is not None else None)
+            test_series = pd.Series([x for x in test if x is not None])
+            if len(test_series) > 0 and test_series.notna().all():
                 numeric_cols_set.add(col)
         except:
             pass
@@ -251,7 +255,7 @@ def export_df_to_pdf(df, title, file_name, columns_order=None, extra_info=None, 
         c.line(xs, y+5, xs, y - row_height + 5)
         y -= row_height
 
-    # ===== صف الإجمالي — نعرض الإجمالي فقط للأعمدة الرقمية =====
+    # صف الإجمالي — الأعمدة الرقمية فقط
     c.line(xs, y+5, xs+tw, y+5); y -= 5
     c.setFillColor(colors.HexColor("#e8f0fe")); c.rect(xs, y-15, tw, 22, fill=1, stroke=0); c.setFillColor(colors.black)
     cw = widths[0]; xr = xs + tw; xl = xr - cw
@@ -263,7 +267,6 @@ def export_df_to_pdf(df, title, file_name, columns_order=None, extra_info=None, 
                 total_val = df_num[col].sum()
                 c.drawRightString(xr-5, y-7, format_currency(total_val))
             except: pass
-        # لا نضع أي شيء للأعمدة النصية
         xc -= cw
     c.save(); buf.seek(0)
     orientation_label = "أفقي" if landscape_mode else "عمودي"
@@ -1950,10 +1953,8 @@ elif menu == "التقارير":
                 st.markdown("---")
                 st.markdown("#### 📤 تصدير التقرير")
 
-                # نسخة التصدير — تحويل إجمالي المتبقي إلى نص منسق
+                # نحتفظ بالأرقام كما هي، دالة PDF ستنسقها تلقائياً
                 df_export = df_selected.copy()
-                if 'إجمالي المتبقي' in df_export.columns:
-                    df_export['إجمالي المتبقي'] = df_export['إجمالي المتبقي'].apply(lambda x: format_currency(x))
 
                 # عنوان PDF مبسط
                 title_parts = [f"مستحقات سابقة حتى {td_due}"]
