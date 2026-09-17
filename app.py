@@ -131,7 +131,7 @@ def wrap_text_for_pdf(text, max_chars_per_line):
     if remaining: lines.append(remaining)
     return lines
 
-DATE_COLUMNS = ['تاريخ الاستحقاق','تاريخ السداد','بداية الفترة','نهاية الفترة','أقدم دفعة غير مسددة','الاستحقاق','من تاريخ','إلى تاريخ']
+DATE_COLUMNS = ['تاريخ الاستحقاق','تاريخ السداد','بداية الفترة','نهاية الفترة','أقدم دفعة غير مسددة']
 
 def export_df_to_pdf(df, title, file_name, columns_order=None, extra_info=None, landscape_mode=False):
     if columns_order: df = df[columns_order]
@@ -353,6 +353,8 @@ def print_receipt(receipt_id):
 def get_conn():
     conn = sqlite3.connect("rentals.db", timeout=30)
     conn.row_factory = sqlite3.Row
+    conn.execute("PRAGMA journal_mode=WAL;")
+    conn.execute("PRAGMA synchronous=NORMAL;")
     conn.execute("PRAGMA busy_timeout=30000;")
     return conn
 
@@ -361,20 +363,46 @@ def ensure_columns(cur, table, cols):
     ex = [c[1] for c in cur.fetchall()]
     for cn in cols:
         if cn not in ex:
-            if cn in ('interval_months','tax_included','is_temporary','is_advance'):
+            if cn in ('interval_months','tax_included','is_temporary'):
                 cur.execute(f"ALTER TABLE {table} ADD COLUMN {cn} INTEGER DEFAULT 0")
             elif cn == 'tax_rate':
                 cur.execute(f"ALTER TABLE {table} ADD COLUMN {cn} REAL DEFAULT 0.15")
-            elif cn in ('attachment','contract_file','permissions','temporary_note','calendar_type','hijri_start_date','hijri_end_date'):
+            elif cn in ('attachment','contract_file','permissions','temporary_note'):
                 cur.execute(f"ALTER TABLE {table} ADD COLUMN {cn} TEXT")
             else:
                 cur.execute(f"ALTER TABLE {table} ADD COLUMN {cn} TEXT")
+def run_force_migrations():
+    """تضمن وجود الأعمدة الجديدة - تعمل في كل تشغيل"""
+    try:
+        conn = sqlite3.connect("rentals.db", timeout=10)
+        conn.execute("PRAGMA busy_timeout=30000;")
+        cur = conn.cursor()
+        try:
+            cur.execute("PRAGMA table_info(payments)")
+            pay_cols = [c[1] for c in cur.fetchall()]
+            if 'is_advance' not in pay_cols:
+                cur.execute("ALTER TABLE payments ADD COLUMN is_advance INTEGER DEFAULT 0")
+        except: pass
+        try:
+            cur.execute("PRAGMA table_info(contracts)")
+            con_cols = [c[1] for c in cur.fetchall()]
+            if 'calendar_type' not in con_cols:
+                cur.execute("ALTER TABLE contracts ADD COLUMN calendar_type TEXT DEFAULT 'ميلادي'")
+            if 'hijri_start_date' not in con_cols:
+                cur.execute("ALTER TABLE contracts ADD COLUMN hijri_start_date TEXT")
+            if 'hijri_end_date' not in con_cols:
+                cur.execute("ALTER TABLE contracts ADD COLUMN hijri_end_date TEXT")
+        except: pass
+        conn.commit()
+        conn.close()
+    except Exception:
+        pass
 
 @st.cache_resource
 def init_db():
+@st.cache_resource
+def init_db():
     conn = get_conn(); cur = conn.cursor()
-    cur.execute("PRAGMA journal_mode=WAL;")
-    cur.execute("PRAGMA synchronous=NORMAL;")
     cur.execute('CREATE TABLE IF NOT EXISTS settings (key TEXT PRIMARY KEY, value TEXT)')
     cur.execute('''CREATE TABLE IF NOT EXISTS users (id INTEGER PRIMARY KEY AUTOINCREMENT, username TEXT UNIQUE NOT NULL,
                    password_hash TEXT, role TEXT DEFAULT 'مشاهد', permissions TEXT DEFAULT '{}', created_at TEXT DEFAULT CURRENT_TIMESTAMP)''')
@@ -401,9 +429,8 @@ def init_db():
     cur.execute('''CREATE TABLE IF NOT EXISTS contract_discounts (
                    id INTEGER PRIMARY KEY AUTOINCREMENT, contract_id INTEGER, discount_type TEXT DEFAULT 'نسبة',
                    discount_value REAL, start_date TEXT, end_date TEXT, reason TEXT, created_at TEXT DEFAULT CURRENT_TIMESTAMP)''')
-    # ✅ إضافة أعمدة جديدة: دفعات مقدمة + نوع التقويم + التواريخ الهجرية
-    ensure_columns(cur, 'payments', ['due_date','paid_date','attachment','is_temporary','temporary_note','is_advance'])
-    ensure_columns(cur, 'contracts', ['interval_months','tax_included','tax_rate','contract_file','is_temporary','calendar_type','hijri_start_date','hijri_end_date'])
+    ensure_columns(cur, 'payments', ['due_date','paid_date','attachment','is_temporary','temporary_note'])
+    ensure_columns(cur, 'contracts', ['interval_months','tax_included','tax_rate','contract_file','is_temporary'])
     ensure_columns(cur, 'receipts', ['attachment'])
     cur.execute("SELECT COUNT(*) FROM users")
     if cur.fetchone()[0] == 0:
@@ -412,6 +439,7 @@ def init_db():
     conn.commit(); conn.close()
 
 init_db()
+run_force_migrations()
 
 PAGE_KEYS = ["لوحة التحكم","إدارة البيانات","الدفعات","سندات القبض","التقارير","عقود منتهية","المستخدمون","الإعدادات","نسخ احتياطي"]
 
@@ -441,11 +469,8 @@ def load_permissions(uid):
 def save_permissions(uid, perms):
     conn = get_conn(); cur = conn.cursor()
     cur.execute("UPDATE users SET permissions = ? WHERE id = ?", (json.dumps(perms), uid))
-    conn.commit(); conn.close()
-    has_permission.clear()
-    st.cache_data.clear()
+    conn.commit(); conn.close(); st.cache_data.clear()
 
-@st.cache_data(ttl=120)
 def has_permission(uid, page):
     if not uid: return False
     return load_permissions(uid).get(page, False)
@@ -637,6 +662,7 @@ def create_payment_schedule(cid, tid, sd, ed, ra, im):
     return cnt
 
 def create_payment_schedule_inline(cur, cid, tid, sd, ed, ra, im):
+    """نسخة داخلية تستخدم cursor موجود — بدون فتح اتصال جديد (حل Database is locked)"""
     step = relativedelta(months=im); cur_d = sd
     cnt = 0
     while cur_d <= ed:
@@ -666,12 +692,6 @@ def get_unread_alerts(tid=None):
         cur.execute("SELECT a.alert_text, a.alert_date, t.name FROM alerts a JOIN tenants t ON a.tenant_id = t.id WHERE a.is_read = 0 ORDER BY a.alert_date DESC")
     r = cur.fetchall(); conn.close(); return r
 
-def gregorian_to_hijri_str(greg_date):
-    try:
-        h = convert.Gregorian(greg_date.year, greg_date.month, greg_date.day).to_hijri()
-        return f"{h.day:02d}-{h.month:02d}-{h.year}"
-    except: return ""
-
 def hijri_to_gregorian(hs):
     d, m, y = map(int, hs.split('-')); g = convert.Hijri(y, m, d).to_gregorian()
     return date(g.year, g.month, g.day)
@@ -698,24 +718,14 @@ def delete_all_temporary_payments(cid):
     conn.commit(); conn.close(); st.cache_data.clear()
 
 def get_all_expired_contracts():
-    """✅ العقود المنتهية — تستثني فقط من لديه عقد نشط سارٍ بنفس الوقت"""
     conn = get_conn(); cur = conn.cursor()
-    cur.execute('''
-        SELECT c.id, c.contract_number, t.name as tenant_name, c.end_date, c.tenant_id,
-               p.name as prop_name, c.rent_amount, c.interval_months, t.region
-        FROM contracts c
-        JOIN tenants t ON c.tenant_id = t.id
-        JOIN properties p ON c.property_id = p.id
-        WHERE c.end_date < date('now')
-        AND c.id NOT IN (
-            SELECT c2.id FROM contracts c2
-            WHERE c2.tenant_id = c.tenant_id
-            AND c2.end_date >= date('now')
-            AND c2.status = 'نشط'
-            AND c2.id != c.id
-        )
-        ORDER BY c.end_date DESC
-    ''')
+    cur.execute('''SELECT c.id, c.contract_number, t.name as tenant_name, c.end_date, c.tenant_id,
+                   p.name as prop_name, c.rent_amount, c.interval_months
+                   FROM contracts c JOIN tenants t ON c.tenant_id = t.id
+                   JOIN properties p ON c.property_id = p.id
+                   WHERE c.end_date < date('now')
+                   AND c.tenant_id NOT IN (SELECT tenant_id FROM contracts WHERE status='نشط' AND end_date >= date('now'))
+                   ORDER BY c.end_date DESC''')
     r = cur.fetchall(); conn.close(); return [dict(x) for x in r]
 
 def get_total_dues_until(target_date, only_overdue=False):
@@ -735,7 +745,7 @@ def get_total_dues_until(target_date, only_overdue=False):
     conn.close()
     return total, total_all, count_due, count_overdue
 
-@st.cache_data(ttl=120)
+@st.cache_data(ttl=60)
 def load_tenants():
     conn = get_conn()
     df = pd.read_sql_query('''SELECT t.id as "الرقم", t.name as "الاسم", t.phone as "الهاتف",
@@ -745,42 +755,40 @@ def load_tenants():
         FROM tenants t LEFT JOIN contracts c ON c.tenant_id = t.id AND c.status = 'نشط' ORDER BY t.name''', conn)
     conn.close(); return df
 
-@st.cache_data(ttl=120)
+@st.cache_data(ttl=60)
 def load_properties():
     conn = get_conn()
     df = pd.read_sql_query('SELECT id as "الرقم", name as "الاسم", description as "الوصف", address as "العنوان", region as "المنطقة", area as "المساحة" FROM properties', conn)
     conn.close(); return df
 
-@st.cache_data(ttl=120)
+@st.cache_data(ttl=60)
 def load_contracts():
     conn = get_conn(); cur = conn.cursor()
     cur.execute("PRAGMA table_info(contracts)")
     cols = [c[1] for c in cur.fetchall()]
     al = {'id':'الرقم','contract_number':'رقم العقد','start_date':'تاريخ البداية','end_date':'تاريخ النهاية',
           'rent_amount':'قيمة الإيجار السنوي','interval_months':'دورية السداد (شهور)','deposit_amount':'التأمين',
-          'status':'الحالة','tax_included':'شامل الضريبة','tax_rate':'نسبة الضريبة','contract_file':'ملف العقد',
-          'calendar_type':'نوع التقويم'}
+          'status':'الحالة','tax_included':'شامل الضريبة','tax_rate':'نسبة الضريبة','contract_file':'ملف العقد'}
     sc = []
-    for c in ['id','contract_number','start_date','end_date','rent_amount','interval_months','deposit_amount','status','tax_included','tax_rate','contract_file','calendar_type']:
+    for c in ['id','contract_number','start_date','end_date','rent_amount','interval_months','deposit_amount','status','tax_included','tax_rate','contract_file']:
         if c in cols: sc.append(f"c.{c} as '{al[c]}'")
         else:
             if c == 'interval_months': sc.append("1 as 'دورية السداد (شهور)'")
             elif c == 'tax_included': sc.append("0 as 'شامل الضريبة'")
             elif c == 'tax_rate': sc.append("0.15 as 'نسبة الضريبة'")
             elif c == 'contract_file': sc.append("NULL as 'ملف العقد'")
-            elif c == 'calendar_type': sc.append("'ميلادي' as 'نوع التقويم'")
             else: sc.append(f"NULL as '{al[c]}'")
     q = f"""SELECT {', '.join(sc)}, t.name as 'اسم المستأجر', p.name as 'اسم العقار'
             FROM contracts c JOIN tenants t ON c.tenant_id = t.id JOIN properties p ON c.property_id = p.id"""
     df = pd.read_sql_query(q, conn); conn.close(); return df
 
-@st.cache_data(ttl=120)
+@st.cache_data(ttl=60)
 def load_payments(sf='الكل'):
     conn = get_conn()
     q = '''SELECT pay.id as 'الرقم', t.name as 'المستأجر', p.name as 'العقار', pay.due_date as 'تاريخ الاستحقاق',
         pay.amount as 'المبلغ', pay.paid_amount as 'المدفوع', (pay.amount - pay.paid_amount) as 'المتبقي',
         pay.status as 'الحالة', pay.paid_date as 'تاريخ السداد', pay.attachment as 'المرفق',
-        pay.is_temporary as 'مؤقت', pay.is_advance as 'دفعة مقدمة', t.region as 'المنطقة', t.id as 'معرف_المستأجر' 
+        pay.is_temporary as 'مؤقت', t.region as 'المنطقة', t.id as 'معرف_المستأجر' 
         FROM payments pay JOIN tenants t ON pay.tenant_id = t.id
         JOIN contracts c ON pay.contract_id = c.id JOIN properties p ON c.property_id = p.id'''
     if sf != 'الكل':
@@ -788,7 +796,7 @@ def load_payments(sf='الكل'):
     else: p = ()
     df = pd.read_sql_query(q, conn, params=p); conn.close(); return df
 
-@st.cache_data(ttl=120)
+@st.cache_data(ttl=60)
 def load_receipts():
     conn = get_conn()
     df = pd.read_sql_query('''SELECT r.id as 'الرقم', r.receipt_number as 'رقم السند', t.name as 'المستأجر',
@@ -815,8 +823,7 @@ def import_tenants_from_excel(f):
                          str(row.get("المنطقة","")).strip() if "المنطقة" in df.columns else "",
                          str(row.get("ملاحظات","")).strip() if "ملاحظات" in df.columns else ""))
             add += 1
-        conn.commit(); conn.close()
-        load_tenants.clear()
+        conn.commit(); conn.close(); st.cache_data.clear()
         st.toast(f"تم استيراد {add} مستأجر", icon="✅")
     except Exception as e: st.error(f"خطأ: {e}")
 
@@ -836,39 +843,58 @@ def import_properties_from_excel(f):
                          str(row.get("المنطقة","")).strip() if "المنطقة" in df.columns else "",
                          str(row.get("المساحة","")).strip() if "المساحة" in df.columns else ""))
             add += 1
-        conn.commit(); conn.close()
-        load_properties.clear()
+        conn.commit(); conn.close(); st.cache_data.clear()
         st.toast(f"تم استيراد {add} عقار", icon="✅")
     except Exception as e: st.error(f"خطأ: {e}")
 
 def parse_excel_date(val):
-    if val is None or pd.isna(val): return None
-    if isinstance(val, datetime): return val.date()
-    if isinstance(val, date): return val
+    """تحويل قيمة التاريخ من Excel (نص/تاريخ/رقم تسلسلي) إلى date"""
+    if val is None or pd.isna(val):
+        return None
+    if isinstance(val, datetime):
+        return val.date()
+    if isinstance(val, date):
+        return val
     if isinstance(val, (int, float, np.integer, np.floating)):
         try:
             iv = int(val)
-            if iv <= 0: return None
+            if iv <= 0:
+                return None
+            # Excel serial date: origin = 1899-12-30
             return (datetime(1899, 12, 30) + timedelta(days=iv)).date()
-        except: return None
+        except:
+            return None
     try:
         d = pd.to_datetime(str(val), errors='coerce')
-        if pd.isna(d): return None
+        if pd.isna(d):
+            return None
         return d.date()
-    except: return None
+    except:
+        return None
+
 
 def clean_id_value(val):
-    if val is None or pd.isna(val): return None
+    """تنظيف قيم الأرقام (تجاهل 0، 0.0، NaN، نصوص فارغة)"""
+    if val is None or pd.isna(val):
+        return None
     s = str(val).strip()
-    if s in ("", "0", "0.0", "nan", "NaN", "None"): return None
-    try: return int(float(s))
-    except: return None
+    if s in ("", "0", "0.0", "nan", "NaN", "None"):
+        return None
+    try:
+        return int(float(s))
+    except:
+        return None
+
 
 def clean_text_value(val):
-    if val is None or pd.isna(val): return ""
+    """تنظيف النصوص (تجاهل NaN و 0 والأصفار)"""
+    if val is None or pd.isna(val):
+        return ""
     s = str(val).strip()
-    if s in ("0", "0.0", "nan", "NaN", "None"): return ""
+    if s in ("0", "0.0", "nan", "NaN", "None"):
+        return ""
     return s
+
 
 def import_contracts_from_excel(f):
     try:
@@ -877,43 +903,55 @@ def import_contracts_from_excel(f):
             if col not in df.columns:
                 st.error(f"يجب أن يحتوي الملف على عمود '{col}'")
                 return
+
         conn = get_conn(); cur = conn.cursor()
         tenants_data = cur.execute("SELECT id, name FROM tenants").fetchall()
         properties_data = cur.execute("SELECT id, name FROM properties").fetchall()
+
         tenant_by_id = {t[0]: t[1] for t in tenants_data}
         prop_by_id = {p[0]: p[1] for p in properties_data}
+
         tenant_name_count = {}
         tenant_name_to_id = {}
         for t in tenants_data:
             tenant_name_count[t[1]] = tenant_name_count.get(t[1], 0) + 1
             if t[1] not in tenant_name_to_id:
                 tenant_name_to_id[t[1]] = t[0]
+
         prop_name_count = {}
         prop_name_to_id = {}
         for p in properties_data:
             prop_name_count[p[1]] = prop_name_count.get(p[1], 0) + 1
             if p[1] not in prop_name_to_id:
                 prop_name_to_id[p[1]] = p[0]
-        imp = 0; errors = []
+
+        imp = 0
+        errors = []
         has_tenant_id_col = "رقم المستأجر" in df.columns
         has_prop_id_col = "رقم العقار" in df.columns
+
         for idx, row in df.iterrows():
             try:
+                # ========== رقم العقد ==========
                 cnum = ""
                 if "رقم العقد" in df.columns:
                     cnum = clean_text_value(row.get("رقم العقد", None))
-                if not cnum: cnum = generate_contract_number()
+                if not cnum:
+                    cnum = generate_contract_number()
                 else:
                     ex = cur.execute("SELECT id FROM contracts WHERE contract_number=?", (cnum,)).fetchone()
                     if ex:
                         errors.append(f"صف {idx+2}: رقم العقد '{cnum}' مكرر — تم تجاهله")
                         continue
+
+                # ========== المستأجر ==========
                 tid = None
                 if has_tenant_id_col:
                     tid = clean_id_value(row.get("رقم المستأجر", None))
                     if tid is not None and tid not in tenant_by_id:
                         errors.append(f"صف {idx+2}: رقم المستأجر {tid} غير موجود")
                         continue
+
                 if not tid:
                     tn = clean_text_value(row.get("اسم المستأجر", ""))
                     if not tn or tn not in tenant_name_to_id:
@@ -923,12 +961,15 @@ def import_contracts_from_excel(f):
                         errors.append(f"صف {idx+2}: يوجد {tenant_name_count[tn]} مستأجرين باسم '{tn}' — استخدم 'رقم المستأجر'")
                         continue
                     tid = tenant_name_to_id[tn]
+
+                # ========== العقار ==========
                 pid = None
                 if has_prop_id_col:
                     pid = clean_id_value(row.get("رقم العقار", None))
                     if pid is not None and pid not in prop_by_id:
                         errors.append(f"صف {idx+2}: رقم العقار {pid} غير موجود")
                         continue
+
                 if not pid:
                     pn = clean_text_value(row.get("اسم العقار", ""))
                     if not pn or pn not in prop_name_to_id:
@@ -938,42 +979,50 @@ def import_contracts_from_excel(f):
                         errors.append(f"صف {idx+2}: يوجد {prop_name_count[pn]} عقارات باسم '{pn}' — استخدم 'رقم العقار'")
                         continue
                     pid = prop_name_to_id[pn]
+
+                # ========== التواريخ (مع دعم Excel Serial) ==========
                 sd = parse_excel_date(row.get("تاريخ البداية", None))
                 ed = parse_excel_date(row.get("تاريخ النهاية", None))
                 if sd is None:
-                    errors.append(f"صف {idx+2}: تاريخ البداية غير صحيح")
+                    errors.append(f"صف {idx+2}: تاريخ البداية غير صحيح أو فارغ")
                     continue
                 if ed is None:
-                    errors.append(f"صف {idx+2}: تاريخ النهاية غير صحيح")
+                    errors.append(f"صف {idx+2}: تاريخ النهاية غير صحيح أو فارغ")
                     continue
                 if sd >= ed:
-                    errors.append(f"صف {idx+2}: تاريخ البداية بعد النهاية")
+                    errors.append(f"صف {idx+2}: تاريخ البداية ({sd}) بعد أو يساوي النهاية ({ed})")
                     continue
+
+                # ========== باقي الحقول ==========
                 ra = safe_float(row.get("قيمة الإيجار السنوي", 0))
                 im = int(row.get("دورية السداد (شهور)", 1)) if "دورية السداد (شهور)" in df.columns else 1
                 da = safe_float(row.get("التأمين", 0))
                 ti = 1 if row.get("شامل الضريبة", False) else 0
                 tr = safe_float(row.get("نسبة الضريبة", 0.15))
                 nt = clean_text_value(row.get("ملاحظات", ""))
+
                 cur.execute('''INSERT INTO contracts (tenant_id, property_id, contract_number, start_date, end_date,
-                    rent_amount, interval_months, deposit_amount, notes, tax_included, tax_rate, calendar_type)
-                    VALUES (?,?,?,?,?,?,?,?,?,?,?,?)''',
-                    (tid, pid, cnum, sd.isoformat(), ed.isoformat(), ra, im, da, nt, ti, tr, 'ميلادي'))
+                    rent_amount, interval_months, deposit_amount, notes, tax_included, tax_rate)
+                    VALUES (?,?,?,?,?,?,?,?,?,?,?)''',
+                    (tid, pid, cnum, sd.isoformat(), ed.isoformat(), ra, im, da, nt, ti, tr))
                 cid = cur.lastrowid
                 create_payment_schedule_inline(cur, cid, tid, sd, ed, ra, im)
                 imp += 1
-                if imp % 10 == 0: conn.commit()
+                if imp % 10 == 0:
+                    conn.commit()
             except Exception as e:
                 errors.append(f"صف {idx+2}: {str(e)}")
-        conn.commit(); conn.close()
-        load_contracts.clear(); load_payments.clear(); load_tenants.clear()
+
+        conn.commit(); conn.close(); st.cache_data.clear()
         msg = f"✅ تم استيراد {imp} عقد"
         if errors: msg += f" — فشل {len(errors)} صف"
         st.toast(msg, icon="✅")
         if errors:
-            with st.expander(f"⚠️ الأخطاء ({len(errors)})", expanded=True):
-                for er in errors[:30]: st.text(er)
-    except Exception as e: st.error(f"خطأ: {e}")
+            with st.expander(f"⚠️ عرض الأخطاء ({len(errors)})", expanded=True):
+                for er in errors[:30]:
+                    st.text(er)
+    except Exception as e:
+        st.error(f"خطأ: {e}")
 
 def add_user(u, p, r):
     conn = get_conn(); cur = conn.cursor()
@@ -982,15 +1031,12 @@ def add_user(u, p, r):
     ph = hashlib.sha256(p.strip().encode()).hexdigest()
     cur.execute('INSERT INTO users (username, password_hash, role, permissions) VALUES (?,?,?,?)',
                 (u.strip(), ph, r, json.dumps(get_default_permissions(r))))
-    conn.commit(); conn.close()
-    has_permission.clear()
-    return True, "تمت الإضافة"
+    conn.commit(); conn.close(); return True, "تمت الإضافة"
 
 def delete_user(uid):
     conn = get_conn(); cur = conn.cursor()
     cur.execute("DELETE FROM users WHERE id=?", (uid,))
-    conn.commit(); conn.close()
-    has_permission.clear()
+    conn.commit(); conn.close(); st.cache_data.clear()
 
 def load_users():
     conn = get_conn()
@@ -1005,34 +1051,29 @@ def delete_contract(cid):
     cur.execute("DELETE FROM additional_fees WHERE contract_id=?", (cid,))
     cur.execute("DELETE FROM contract_discounts WHERE contract_id=?", (cid,))
     cur.execute("DELETE FROM contracts WHERE id=?", (cid,))
-    conn.commit(); conn.close()
-    load_contracts.clear(); load_payments.clear(); load_tenants.clear()
+    conn.commit(); conn.close(); st.cache_data.clear()
 
 def delete_tenant(tid):
     conn = get_conn(); cur = conn.cursor()
     cur.execute("DELETE FROM tenants WHERE id=?", (tid,))
-    conn.commit(); conn.close()
-    load_tenants.clear(); get_all_tenants.clear()
+    conn.commit(); conn.close(); st.cache_data.clear()
 
 def delete_property(pid):
     conn = get_conn(); cur = conn.cursor()
     cur.execute("DELETE FROM properties WHERE id=?", (pid,))
-    conn.commit(); conn.close()
-    load_properties.clear(); get_all_properties.clear()
+    conn.commit(); conn.close(); st.cache_data.clear()
 
 def add_tenant(n, p, ni, a, r, nt):
     conn = get_conn(); cur = conn.cursor()
     cur.execute('INSERT INTO tenants (name, phone, national_id, address, region, notes) VALUES (?,?,?,?,?,?)', (n,p,ni,a,r,nt))
-    conn.commit(); conn.close()
-    load_tenants.clear(); get_all_tenants.clear()
+    conn.commit(); conn.close(); st.cache_data.clear()
 
 def add_property(n, d, a, r, ar):
     conn = get_conn(); cur = conn.cursor()
     cur.execute('INSERT INTO properties (name, description, address, region, area) VALUES (?,?,?,?,?)', (n,d,a,r,ar))
-    conn.commit(); conn.close()
-    load_properties.clear(); get_all_properties.clear()
+    conn.commit(); conn.close(); st.cache_data.clear()
 
-def add_contract_full(tid, pid, cn, sd, ed, ra, im, da, ti, tr, nt, fb, calendar_type='ميلادي', hijri_start='', hijri_end=''):
+def add_contract_full(tid, pid, cn, sd, ed, ra, im, da, ti, tr, nt, fb):
     conn = get_conn(); cur = conn.cursor()
     if cn:
         ex = cur.execute("SELECT id FROM contracts WHERE contract_number=?", (cn,)).fetchone()
@@ -1040,28 +1081,25 @@ def add_contract_full(tid, pid, cn, sd, ed, ra, im, da, ti, tr, nt, fb, calendar
             conn.close(); return False, "رقم العقد مستخدم بالفعل", None
     else: cn = generate_contract_number()
     cur.execute('''INSERT INTO contracts (tenant_id, property_id, contract_number, start_date, end_date,
-        rent_amount, interval_months, deposit_amount, notes, tax_included, tax_rate, contract_file, calendar_type, hijri_start_date, hijri_end_date)
-        VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)''',
-        (tid, pid, cn, sd.isoformat(), ed.isoformat(), ra, im, da, nt, ti, tr, fb, calendar_type, hijri_start, hijri_end))
+        rent_amount, interval_months, deposit_amount, notes, tax_included, tax_rate, contract_file)
+        VALUES (?,?,?,?,?,?,?,?,?,?,?,?)''',
+        (tid, pid, cn, sd.isoformat(), ed.isoformat(), ra, im, da, nt, ti, tr, fb))
     cid = cur.lastrowid
     conn.commit(); conn.close()
     create_payment_schedule(cid, tid, sd, ed, ra, im)
-    load_contracts.clear(); load_payments.clear(); load_tenants.clear()
+    st.cache_data.clear()
     return True, "تم إنشاء العقد بنجاح", cn
 
-@st.cache_data(ttl=300)
 def get_active_tenants():
     conn = get_conn(); cur = conn.cursor()
     cur.execute("SELECT id, name FROM tenants WHERE id NOT IN (SELECT tenant_id FROM contracts WHERE status='نشط') ORDER BY name")
     r = cur.fetchall(); conn.close(); return [(x[0], x[1]) for x in r]
 
-@st.cache_data(ttl=300)
 def get_all_tenants():
     conn = get_conn(); cur = conn.cursor()
     cur.execute("SELECT id, name FROM tenants ORDER BY name")
     r = cur.fetchall(); conn.close(); return [(x[0], x[1]) for x in r]
 
-@st.cache_data(ttl=300)
 def get_all_properties():
     conn = get_conn(); cur = conn.cursor()
     cur.execute("SELECT id, name FROM properties ORDER BY name")
@@ -1074,13 +1112,11 @@ def get_receipt_details(rid):
     if r: return dict(r)
     return None
 
-@st.cache_data(ttl=120)
 def get_contracts_by_tenant(tid):
     conn = get_conn(); cur = conn.cursor()
     cur.execute("SELECT id, contract_number FROM contracts WHERE tenant_id=?", (tid,))
     r = cur.fetchall(); conn.close(); return [(x[0], x[1]) for x in r]
 
-@st.cache_data(ttl=120)
 def get_payments_by_contract(cid):
     conn = get_conn(); cur = conn.cursor()
     cur.execute("SELECT id, due_date, amount, paid_amount FROM payments WHERE contract_id=?", (cid,))
@@ -1111,8 +1147,7 @@ def update_receipt(rid, rn, tid, cid, pid, amt, rd, pm, nt, att):
     cur.execute('''UPDATE receipts SET receipt_number=?, tenant_id=?, contract_id=?, payment_id=?, amount=?,
                    receipt_date=?, payment_method=?, notes=?, attachment=? WHERE id=?''',
                 (rn, tid, cid, pid, amt, rd.isoformat(), pm, nt, att, rid))
-    conn.commit(); conn.close()
-    load_receipts.clear(); load_payments.clear(); get_payments_by_contract.clear()
+    conn.commit(); conn.close(); st.cache_data.clear()
     return True, "تم التعديل"
 
 def create_compressed_backup():
@@ -1175,23 +1210,6 @@ if menu == "لوحة التحكم" and has_permission(current_user_id, "لوحة
     c6.metric("عقود منتهية", len(exp_d))
     c7.metric("💵 إجمالي المستحقات حتى اليوم", format_currency(total_dues_today))
     c8.metric("⚠️ دفعات متأخرة", f"{count_overdue} دفعة")
-
-    # ✅ تفاصيل العقود المنتهية والمنتهية قريباً قابلة للفتح
-    st.markdown("---")
-    with st.expander(f"📋 عقود تنتهي خلال شهرين ({len(exp_s)}) — اضغط للتفاصيل", expanded=False):
-        if not exp_s.empty:
-            exp_s_display = exp_s[['رقم العقد','اسم المستأجر','اسم العقار','تاريخ النهاية','قيمة الإيجار السنوي','الحالة']].copy()
-            rtl_dataframe(exp_s_display, key="dash_exp_s")
-        else:
-            st.info("لا توجد عقود تنتهي خلال شهرين")
-
-    with st.expander(f"📋 عقود منتهية ({len(exp_d)}) — اضغط للتفاصيل", expanded=False):
-        if not exp_d.empty:
-            exp_d_display = exp_d[['رقم العقد','اسم المستأجر','اسم العقار','تاريخ النهاية','قيمة الإيجار السنوي','الحالة']].copy()
-            rtl_dataframe(exp_d_display, key="dash_exp_d")
-        else:
-            st.info("لا توجد عقود منتهية")
-
     st.markdown("---")
     st.info(f"📌 **إجمالي المستحقات (كل الفترات):** {format_currency(total_dues_all)}")
     st.markdown("---")
@@ -1254,40 +1272,9 @@ elif menu == "إدارة البيانات":
                         ti = cur.execute("SELECT * FROM tenants WHERE id=?", (tid,)).fetchone()
                         if ti:
                             st.markdown(f"**{ti['name']}** - {ti['phone'] or '-'} - {ti['region'] or '-'}")
-
-                            # ✅ سجل العقود الكامل (جميع العقود - نشطة ومنتهية)
-                            st.markdown("### 📚 سجل العقود الكامل")
-                            all_cons = cur.execute('''
-                                SELECT c.id, c.contract_number, p.name as prop_name,
-                                       c.start_date, c.end_date, c.status, c.rent_amount,
-                                       c.calendar_type, c.hijri_start_date, c.hijri_end_date,
-                                       c.tax_included, c.tax_rate
-                                FROM contracts c JOIN properties p ON c.property_id=p.id
-                                WHERE c.tenant_id=?
-                                ORDER BY c.start_date DESC
-                            ''', (tid,)).fetchall()
+                            cons = cur.execute("SELECT c.contract_number, p.name, c.start_date, c.end_date, c.status FROM contracts c JOIN properties p ON c.property_id=p.id WHERE c.tenant_id=?", (tid,)).fetchall()
                             conn.close()
-                            if all_cons:
-                                df_hist = pd.DataFrame([dict(r) for r in all_cons])
-                                df_hist_display = df_hist[['contract_number','prop_name','start_date','end_date','status','rent_amount','calendar_type']].copy()
-                                df_hist_display.columns = ['رقم العقد','العقار','تاريخ البداية','تاريخ النهاية','الحالة','الإيجار السنوي','التقويم']
-                                rtl_dataframe(df_hist_display, key=f"hist_{tid}")
-                                st.caption(f"📌 إجمالي العقود: {len(all_cons)}")
-
-                                # ✅ إجمالي المديونية على كل العقود
-                                total_dues_all_contracts = cur_dues = None
-                                conn2 = get_conn(); cur2 = conn2.cursor()
-                                dues_row = cur2.execute('''SELECT COALESCE(SUM(amount - paid_amount), 0) FROM payments
-                                    WHERE tenant_id=? AND (amount - paid_amount) > 0''', (tid,)).fetchone()
-                                total_dues_all_contracts = dues_row[0] if dues_row else 0
-                                conn2.close()
-                                if total_dues_all_contracts > 0:
-                                    st.warning(f"⚠️ **إجمالي المديونية على كل العقود (بما فيها القديمة):** {format_currency(total_dues_all_contracts)}")
-                                else:
-                                    st.success(f"✅ لا توجد مديونية على المستأجر (جميع العقود مسددة)")
-                            else:
-                                st.info("لا توجد عقود مسجلة لهذا المستأجر")
-
+                            if cons: rtl_dataframe(pd.DataFrame(cons, columns=["رقم العقد","العقار","بداية","نهاية","الحالة"]))
                             if current_role == 'مدير':
                                 c1, c2 = st.columns(2)
                                 if c1.button("تعديل", key=f"btn_ed_t_{tid}"):
@@ -1314,8 +1301,7 @@ elif menu == "إدارة البيانات":
                                             conn = get_conn(); cur = conn.cursor()
                                             cur.execute("UPDATE tenants SET name=?, phone=?, national_id=?, address=?, region=?, notes=? WHERE id=?",
                                                         (n,p,ni,a,r,nt,tid))
-                                            conn.commit(); conn.close()
-                                            load_tenants.clear(); get_all_tenants.clear()
+                                            conn.commit(); conn.close(); st.cache_data.clear()
                                             st.toast("تم التحديث", icon="✅"); st.session_state['edit_tenant_id'] = None; st.rerun()
                 else: st.info("لا نتائج")
         with t2:
@@ -1384,8 +1370,7 @@ elif menu == "إدارة البيانات":
                                         if st.form_submit_button("حفظ"):
                                             conn = get_conn(); cur = conn.cursor()
                                             cur.execute("UPDATE properties SET name=?, description=?, address=?, region=?, area=? WHERE id=?", (n,d,a,r,ar,pid))
-                                            conn.commit(); conn.close()
-                                            load_properties.clear(); get_all_properties.clear()
+                                            conn.commit(); conn.close(); st.cache_data.clear()
                                             st.toast("تم التحديث", icon="✅"); st.session_state['edit_property_id'] = None; st.rerun()
                 else: st.info("لا نتائج")
         with t3:
@@ -1428,28 +1413,8 @@ elif menu == "إدارة البيانات":
                             pid = st.selectbox("العقار *", options=list(po.keys()), format_func=lambda x: po[x])
                             cn_input = st.text_input("رقم العقد (اتركه فارغاً للتوليد التلقائي)", value="",
                                                     placeholder="مثال: CTR-2025-001")
-
-                            # ✅ اختيار نوع التقويم
-                            cal_type = st.radio("نوع التقويم", ["ميلادي", "هجري"], horizontal=True, key="add_c_cal")
-
-                            hijri_start_str = ""; hijri_end_str = ""
-                            if cal_type == "ميلادي":
-                                sd = st.date_input("تاريخ البداية", value=date.today(), key="add_c_sd")
-                                ed = st.date_input("تاريخ النهاية", value=date.today() + relativedelta(years=1), key="add_c_ed")
-                                hijri_start_str = gregorian_to_hijri_str(sd)
-                                hijri_end_str = gregorian_to_hijri_str(ed)
-                            else:
-                                c1h, c2h = st.columns(2)
-                                hijri_start_str = c1h.text_input("تاريخ البداية الهجري (يوم-شهر-سنة)", value=gregorian_to_hijri_str(date.today()), key="add_c_hs")
-                                hijri_end_str = c2h.text_input("تاريخ النهاية الهجري (يوم-شهر-سنة)", value=gregorian_to_hijri_str(date.today() + relativedelta(years=1)), key="add_c_he")
-                                try:
-                                    sd = hijri_to_gregorian(hijri_start_str)
-                                    ed = hijri_to_gregorian(hijri_end_str)
-                                    st.info(f"📅 بالميلادي: من **{sd}** إلى **{ed}**")
-                                except:
-                                    st.error("صيغة التاريخ الهجري غير صحيحة — استخدم DD-MM-YYYY")
-                                    sd = date.today(); ed = date.today() + relativedelta(years=1)
-
+                            sd = st.date_input("البداية", value=date.today())
+                            ed = st.date_input("النهاية", value=date.today() + relativedelta(years=1))
                             ra = st.number_input("الإيجار السنوي", min_value=0.0, step=1000.0, value=0.0)
                             im = st.number_input("الدورية (شهور)", min_value=1, value=1)
                             da = st.number_input("التأمين", min_value=0.0, step=100.0, value=0.0)
@@ -1464,10 +1429,7 @@ elif menu == "إدارة البيانات":
                                 else:
                                     fb = cf.read() if cf else None
                                     ok, msg, final_cn = add_contract_full(tid, pid, cn_input.strip() if cn_input.strip() else "",
-                                                                         sd, ed, ra, im, da, 1 if ti else 0, tr, nt, fb,
-                                                                         calendar_type=cal_type,
-                                                                         hijri_start=hijri_start_str,
-                                                                         hijri_end=hijri_end_str)
+                                                                         sd, ed, ra, im, da, 1 if ti else 0, tr, nt, fb)
                                     if ok:
                                         st.toast(f"✅ {msg} - رقم العقد: {final_cn}", icon="✅")
                                         st.session_state['show_add_c'] = False; st.rerun()
@@ -1509,13 +1471,7 @@ elif menu == "إدارة البيانات":
                             c2.write(f"**العقار:** {ci['prop_name']}")
                             c2.write(f"**العنوان:** {ci['paddr'] or '-'}")
                             st.divider()
-                            # ✅ عرض التقويم والتواريخ الهجرية إن وجدت
-                            cal_type_val = ci['calendar_type'] if 'calendar_type' in ci.keys() else 'ميلادي'
-                            st.write(f"**نوع التقويم:** {cal_type_val}")
                             st.write(f"**البداية:** {ci['start_date']} | **النهاية:** {ci['end_date']}")
-                            if cal_type_val == 'هجري' and ('hijri_start_date' in ci.keys()):
-                                if ci['hijri_start_date']:
-                                    st.write(f"**📅 بالهجري:** من {ci['hijri_start_date']} إلى {ci['hijri_end_date']}")
                             st.write(f"**الإيجار:** {format_currency(ci['rent_amount'])} | **الدورية:** كل {ci['interval_months']} شهر")
                             st.write(f"**التأمين:** {format_currency(ci['deposit_amount'])} | **شامل الضريبة:** {'نعم' if ci['tax_included'] else 'لا'} | **الضريبة:** {safe_float(ci['tax_rate'])*100:.1f}%")
                             st.write(f"**ملاحظات:** {ci['notes'] or '-'}")
@@ -1545,10 +1501,9 @@ elif menu == "إدارة البيانات":
                                     cur.execute("DELETE FROM payments WHERE contract_id=? AND (is_temporary IS NULL OR is_temporary=0)", (cid,))
                                     conn.commit(); conn.close()
                                     cnt = create_payment_schedule(cid, ci['tenant_id'], parse_date_safe(ci['start_date']), parse_date_safe(ci['end_date']), ci['rent_amount'], ci['interval_months'])
-                                    load_payments.clear()
                                     st.toast(f"تم إعادة توليد {cnt} دفعة", icon="✅"); st.rerun()
                             with adv[1]:
-                                st.markdown("#### رسوم إضافية")
+                                st.markdown("#### رسوم إضافية (معفاة من الضريبة افتراضياً)")
                                 fees = get_additional_fees(cid)
                                 if fees:
                                     dff = pd.DataFrame(fees)[['id','fee_name','amount','frequency','tax_included','notes']]
@@ -1567,7 +1522,7 @@ elif menu == "إدارة البيانات":
                                     if st.form_submit_button("➕ إضافة رسم"):
                                         add_additional_fee(cid, fn, fa, ff, 1 if ft else 0, fnt); st.toast("تمت الإضافة", icon="✅"); st.rerun()
                             with adv[2]:
-                                st.markdown("#### الخصومات")
+                                st.markdown("#### الخصومات لفترة محددة")
                                 discs = get_discounts(cid)
                                 if discs:
                                     dfd = pd.DataFrame(discs)[['id','discount_type','discount_value','start_date','end_date','reason']]
@@ -1590,7 +1545,6 @@ elif menu == "إدارة البيانات":
                                     cur.execute("DELETE FROM payments WHERE contract_id=? AND (is_temporary IS NULL OR is_temporary=0)", (cid,))
                                     conn.commit(); conn.close()
                                     cnt = create_payment_schedule(cid, ci['tenant_id'], parse_date_safe(ci['start_date']), parse_date_safe(ci['end_date']), ci['rent_amount'], ci['interval_months'])
-                                    load_payments.clear()
                                     st.toast(f"تم إعادة توليد {cnt} دفعة", icon="✅"); st.rerun()
                             if current_role == 'مدير':
                                 c1, c2 = st.columns(2)
@@ -1629,8 +1583,7 @@ elif menu == "إدارة البيانات":
                                                 cur.execute("DELETE FROM payments WHERE contract_id=? AND (is_temporary IS NULL OR is_temporary=0)", (cid,))
                                                 conn.commit(); conn.close()
                                                 cnt = create_payment_schedule(cid, tid, sd, ed, ra, im)
-                                                load_contracts.clear(); load_payments.clear(); load_tenants.clear()
-                                                st.toast(f"تم التحديث ({cnt} دفعة)", icon="✅")
+                                                st.cache_data.clear(); st.toast(f"تم التحديث ({cnt} دفعة)", icon="✅")
                                                 st.session_state['edit_contract_id'] = None; st.rerun()
                 else: st.info("لا عقود")
 
@@ -1639,25 +1592,29 @@ elif menu == "الدفعات":
     if not has_permission(current_user_id, "الدفعات"): st.error("لا تملك صلاحية")
     else:
         t1, t2 = st.tabs(["عرض الدفعات","تعديل دفعة"])
-        with t1:
+                with t1:
             sf = st.selectbox("الحالة", ["الكل","مستحق","مدفوع","متأخر","جزئي"])
             dfp = load_payments(sf)
             if not dfp.empty:
+                # ✅ فلاتر المنطقة والمستأجر
                 ff1, ff2 = st.columns(2)
                 with ff1:
                     regions_list_p = ["الكل"] + sorted([r for r in dfp["المنطقة"].dropna().unique().tolist() if r])
                     sel_region_p = st.selectbox("المنطقة", regions_list_p, key="pay_region_flt")
                 with ff2:
+                    # المستأجرين مرتبطين بالمنطقة المختارة
                     if sel_region_p != "الكل":
                         tenants_in_region = sorted(dfp[dfp["المنطقة"] == sel_region_p]["المستأجر"].dropna().unique().tolist())
                     else:
                         tenants_in_region = sorted(dfp["المستأجر"].dropna().unique().tolist())
                     sel_tenant_p = st.selectbox("المستأجر", ["الكل"] + tenants_in_region, key="pay_tenant_flt")
+
                 dfp_f = dfp.copy()
                 if sel_region_p != "الكل":
                     dfp_f = dfp_f[dfp_f["المنطقة"] == sel_region_p]
                 if sel_tenant_p != "الكل":
                     dfp_f = dfp_f[dfp_f["المستأجر"] == sel_tenant_p]
+
                 sq = st.text_input("بحث", key="ps_")
                 f = dfp_f[dfp_f["المستأجر"].str.contains(sq, case=False, na=False)] if sq else dfp_f
                 if not f.empty:
@@ -1720,8 +1677,7 @@ elif menu == "الدفعات":
                                         conn = get_conn(); cur = conn.cursor()
                                         cur.execute("UPDATE payments SET due_date=?, amount=?, status=?, notes=? WHERE id=?",
                                                     (dd.isoformat(), am, stt, nt, pid))
-                                        conn.commit(); conn.close()
-                                        load_payments.clear()
+                                        conn.commit(); conn.close(); st.cache_data.clear()
                                         st.toast("تم التعديل", icon="✅"); st.rerun()
                 else: st.info("لا دفعات")
             else: st.warning("ليس لديك صلاحية")
@@ -1734,90 +1690,58 @@ elif menu == "سندات القبض":
         with t1:
             if current_role in ['مدير','محاسب']:
                 dft = load_tenants()
-                if dft.empty:
-                    st.warning("لا مستأجرين")
+                if dft.empty: st.warning("لا مستأجرين")
                 else:
-                    regions_list_pay = ["الكل"] + sorted([r for r in dft["المنطقة"].dropna().unique().tolist() if r])
-                    sel_region_pay = st.selectbox("المنطقة", regions_list_pay, key="sel_region_pay")
-                    dft_f = dft[dft["المنطقة"] == sel_region_pay] if sel_region_pay != "الكل" else dft
-                    if dft_f.empty:
-                        st.warning("لا يوجد مستأجرين في هذه المنطقة")
-                    else:
-                        tid = st.selectbox("المستأجر", dft_f["الرقم"], format_func=lambda x: dft_f[dft_f["الرقم"]==x]["الاسم"].iloc[0], key="sel_tenant_pay")
-                        today = date.today()
-                        conn = get_conn(); cur = conn.cursor()
-                        # ✅ كل الدفعات غير المسددة (بما فيها دفعات أي عقد قديم أو جديد)
-                        dues = cur.execute('''SELECT pay.id, pay.due_date, pay.amount, pay.paid_amount,
-                            (pay.amount - pay.paid_amount) as remaining, c.contract_number, pay.is_advance
-                            FROM payments pay JOIN contracts c ON pay.contract_id = c.id
-                            WHERE pay.tenant_id=? AND pay.status != 'مدفوع'
-                            ORDER BY pay.due_date''', (tid,)).fetchall()
-                        conn.close()
-                        if not dues:
-                            st.info("لا دفعات مستحقة")
-                        else:
-                            dfd = pd.DataFrame(dues, columns=["رقم الدفعة","الاستحقاق","المبلغ","المدفوع","المتبقي","رقم العقد","دفعة مقدمة"])
-                            rtl_dataframe(dfd, key="receipts_dues_table")
-                            pid = st.selectbox("الدفعة", dfd["رقم الدفعة"].tolist(),
-                                              format_func=lambda x: f"دفعة {x} - استحقاق: {dfd[dfd['رقم الدفعة']==x]['الاستحقاق'].iloc[0]}",
-                                              key="sel_pay_pay")
-                            if pid:
-                                od = [d for d in dues if d[0]==pid][0]
-                                rem = od[4]
-                                pdte = st.date_input("تاريخ السداد", value=today, key="pay_date_in")
-                                am = st.number_input("المبلغ", min_value=0.0, max_value=float(rem), value=float(rem), step=100.0, key="pay_amt_in")
-
-                                # ✅ خيار الدفعة المقدمة
-                                is_adv = st.checkbox(
-                                    "💵 دفعة مقدمة (قبل تاريخ الاستحقاق)",
-                                    value=False,
-                                    key="pay_adv_in",
-                                    help="حدد هذا إذا كان المستأجر يدفع مبلغاً قبل تاريخ الاستحقاق"
-                                )
-
-                                mt = st.selectbox("طريقة الدفع", ["نقدي","تحويل بنكي","شيك","دفع في المنصة"], key="pay_mt_in")
-                                att = st.file_uploader("مرفق", type=["pdf","png","jpg","jpeg"], key="pay_att_in")
-                                if st.button("تسجيل السداد", key="btn_register_pay"):
-                                    if am <= 0:
-                                        st.error("المبلغ > 0")
-                                    else:
-                                        fb = att.read() if att else None
-                                        conn = get_conn(); cur = conn.cursor()
-                                        pd_ = cur.execute("SELECT amount, paid_amount, contract_id FROM payments WHERE id=?", (pid,)).fetchone()
-                                        npaid = pd_[1] + am
-                                        stt = "مدفوع" if npaid >= pd_[0] else "جزئي"
-                                        # ✅ حفظ is_advance
-                                        cur.execute("UPDATE payments SET paid_amount=?, paid_date=?, status=?, attachment=?, is_advance=? WHERE id=?",
-                                                    (npaid, pdte.isoformat(), stt, fb, 1 if is_adv else 0, pid))
-                                        rn = generate_receipt_number()
-                                        note_adv = "دفعة مقدمة" if is_adv else ""
-                                        cur.execute('''INSERT INTO receipts (receipt_number, tenant_id, contract_id, payment_id, amount, receipt_date, payment_method, attachment, notes)
-                                            VALUES (?,?,?,?,?,?,?,?,?)''', (rn, tid, pd_[2], pid, am, pdte.isoformat(), mt, fb, note_adv))
-                                        conn.commit(); conn.close()
-                                        load_receipts.clear(); load_payments.clear(); get_payments_by_contract.clear()
-                                        msg_adv = " (دفعة مقدمة)" if is_adv else ""
-                                        st.toast(f"تم تسجيل {format_currency(am)}{msg_adv}", icon="✅"); st.rerun()
-            else:
-                st.warning("ليس لديك صلاحية")
+                    tid = st.selectbox("المستأجر", dft["الرقم"], format_func=lambda x: dft[dft["الرقم"]==x]["الاسم"].iloc[0], key="sel_tenant_pay")
+                                today = date.today()
+                                conn = get_conn(); cur = conn.cursor()
+                                dues = cur.execute('''SELECT id, due_date, amount, paid_amount, (amount - paid_amount) as remaining
+                                    FROM payments WHERE tenant_id=? AND status != 'مدفوع' AND due_date <= ? ORDER BY due_date''',
+                                    (tid, today.isoformat())).fetchall()
+                                conn.close()
+                                if not dues: st.info("لا دفعات مستحقة")
+                                else:
+                                    dfd = pd.DataFrame(dues, columns=["رقم الدفعة","الاستحقاق","المبلغ","المدفوع","المتبقي"])
+                                    rtl_dataframe(dfd)
+                                    pid = st.selectbox("الدفعة", dfd["رقم الدفعة"].tolist(), format_func=lambda x: f"دفعة {x}", key="sel_pay_pay")
+                                    if pid:
+                                        od = [d for d in dues if d[0]==pid][0]; rem = od[4]
+                                        pdte = st.date_input("تاريخ السداد", value=today, key="pay_date_in")
+                                        am = st.number_input("المبلغ", min_value=0.0, max_value=float(rem), value=float(rem), step=100.0, key="pay_amt_in")
+                                        mt = st.selectbox("طريقة الدفع", ["نقدي","تحويل بنكي","شيك","دفع في المنصة"], key="pay_mt_in")
+                                        att = st.file_uploader("مرفق", type=["pdf","png","jpg","jpeg"], key="pay_att_in")
+                                        if st.button("تسجيل السداد", key="btn_register_pay"):
+                                            if am <= 0: st.error("المبلغ > 0")
+                                            else:
+                                                fb = att.read() if att else None
+                                                conn = get_conn(); cur = conn.cursor()
+                                                pd_ = cur.execute("SELECT amount, paid_amount, contract_id FROM payments WHERE id=?", (pid,)).fetchone()
+                                                npaid = pd_[1] + am
+                                                stt = "مدفوع" if npaid >= pd_[0] else "جزئي"
+                                                cur.execute("UPDATE payments SET paid_amount=?, paid_date=?, status=?, attachment=? WHERE id=?",
+                                                            (npaid, pdte.isoformat(), stt, fb, pid))
+                                                rn = generate_receipt_number()
+                                                cur.execute('''INSERT INTO receipts (receipt_number, tenant_id, contract_id, payment_id, amount, receipt_date, payment_method, attachment)
+                                                    VALUES (?,?,?,?,?,?,?,?)''', (rn, tid, pd_[2], pid, am, pdte.isoformat(), mt, fb))
+                                                conn.commit(); conn.close(); st.cache_data.clear()
+                                                st.toast(f"تم تسجيل {format_currency(am)}", icon="✅"); st.rerun()
+            else: st.warning("ليس لديك صلاحية")
         with t2:
             dfr = load_receipts()
             if not dfr.empty:
                 st.markdown("### 🔎 فلاتر البحث")
                 f1, f2, f3 = st.columns(3)
                 with f1:
+                    tenant_names = ["الكل"] + sorted(dfr["المستأجر"].dropna().unique().tolist())
+                    sel_tenant = st.selectbox("المستأجر", tenant_names, key="flt_rec_tenant")
+                with f2:
                     regions = ["الكل"] + sorted([r for r in dfr["المنطقة"].dropna().unique().tolist() if r])
                     sel_region = st.selectbox("المنطقة", regions, key="flt_rec_region")
-                with f2:
-                    if sel_region != "الكل":
-                        tenants_filtered = sorted(dfr[dfr["المنطقة"] == sel_region]["المستأجر"].dropna().unique().tolist())
-                    else:
-                        tenants_filtered = sorted(dfr["المستأجر"].dropna().unique().tolist())
-                    sel_tenant = st.selectbox("المستأجر", ["الكل"] + tenants_filtered, key="flt_rec_tenant")
                 with f3:
                     search_txt = st.text_input("بحث", key="flt_rec_search")
                 dfr_f = dfr.copy()
-                if sel_region != "الكل": dfr_f = dfr_f[dfr_f["المنطقة"] == sel_region]
                 if sel_tenant != "الكل": dfr_f = dfr_f[dfr_f["المستأجر"] == sel_tenant]
+                if sel_region != "الكل": dfr_f = dfr_f[dfr_f["المنطقة"] == sel_region]
                 if search_txt.strip():
                     mask = dfr_f.apply(lambda row: search_txt.lower() in str(row.get("رقم السند","")).lower() or
                                                   search_txt.lower() in str(row.get("ملاحظات","") or "").lower(), axis=1)
@@ -1887,15 +1811,13 @@ elif menu == "عقود منتهية":
     if not has_permission(current_user_id, "عقود منتهية"): st.error("لا تملك صلاحية")
     else:
         exp = get_all_expired_contracts()
-        if not exp:
-            st.info("لا توجد عقود منتهية بدون تجديد")
+        if not exp: st.info("لا توجد عقود منتهية بدون تجديد")
         else:
             dfe = pd.DataFrame(exp)
             dfe = dfe.rename(columns={'id':'رقم_داخلي','contract_number':'رقم العقد','tenant_name':'المستأجر',
                                        'end_date':'تاريخ الانتهاء','prop_name':'العقار','rent_amount':'الإيجار',
-                                       'interval_months':'الدورية','region':'المنطقة'})
-            cols_show = ['رقم العقد','المستأجر','المنطقة','العقار','تاريخ الانتهاء','الإيجار','الدورية']
-            rtl_dataframe(dfe[cols_show])
+                                       'interval_months':'الدورية'})
+            rtl_dataframe(dfe[['رقم العقد','المستأجر','العقار','تاريخ الانتهاء','الإيجار','الدورية']])
             co = {e['id']: f"{e['contract_number']} - {e['tenant_name']} - انتهى {e['end_date']}" for e in exp}
             sel = st.selectbox("اختر عقد", options=list(co.keys()), format_func=lambda x: co[x], key="sel_expired")
             if sel:
@@ -1904,20 +1826,10 @@ elif menu == "عقود منتهية":
                 st.info(f"**المستأجر:** {ci['tenant_name']} | **العقار:** {ci['prop_name']} | "
                         f"**الإيجار السنوي السابق:** {format_currency(ci['rent_amount'])} | "
                         f"**الدورية السابقة:** كل {ci['interval_months']} شهر")
-                # ✅ تنبيه إن كان للمستأجر عقد جديد نشط
-                conn_chk = get_conn(); cur_chk = conn_chk.cursor()
-                new_active = cur_chk.execute('''SELECT contract_number FROM contracts WHERE tenant_id=?
-                    AND status='نشط' AND end_date >= date('now') AND id != ?
-                    ORDER BY start_date DESC LIMIT 1''', (ci['tenant_id'], ci['id'])).fetchone()
-                conn_chk.close()
-                if new_active:
-                    st.success(f"✅ المستأجر لديه عقد نشط جديد: **{new_active[0]}**")
-                else:
-                    st.warning("⚠️ المستأجر مستمر لكن لم يتم عمل عقد جديد بعد")
-
                 st.markdown("---")
                 mode = st.radio("طريقة الإضافة", ["📋 جدول دفعات مؤقت (مثل العقد)", "➕ دفعة واحدة فقط"], horizontal=True, key=f"mode_{sel}")
                 if mode == "📋 جدول دفعات مؤقت (مثل العقد)":
+                    st.markdown("#### توليد جدول دفعات مؤقت")
                     with st.form(f"temp_schedule_f_{sel}"):
                         c1, c2 = st.columns(2)
                         with c1: sd = st.date_input("من تاريخ", value=date.today())
@@ -1934,9 +1846,9 @@ elif menu == "عقود منتهية":
                             elif total_annual <= 0: st.error("المبلغ يجب أن يكون أكبر من صفر")
                             else:
                                 cnt = create_temporary_payment_schedule(sel, ci['tenant_id'], sd, ed, total_annual, interval_months, note)
-                                load_payments.clear()
                                 st.toast(f"تم توليد {cnt} دفعة مؤقتة", icon="✅"); st.rerun()
                 else:
+                    st.markdown("#### إضافة دفعة واحدة يدوياً")
                     with st.form(f"temp_single_f_{sel}"):
                         c1, c2 = st.columns(2)
                         with c1: dd = st.date_input("تاريخ الاستحقاق", value=date.today())
@@ -1946,7 +1858,6 @@ elif menu == "عقود منتهية":
                             if am <= 0: st.error("المبلغ > 0")
                             else:
                                 add_single_temporary_payment(sel, ci['tenant_id'], dd, am, nt)
-                                load_payments.clear()
                                 st.toast("تمت الإضافة", icon="✅"); st.rerun()
                 st.markdown("---")
                 tp = get_temporary_payments(sel)
@@ -1968,10 +1879,10 @@ elif menu == "عقود منتهية":
                                               format_func=lambda x: f"دفعة {x} - {format_currency(next((p['amount'] for p in tp if p['id']==x),0))}",
                                               key=f"del_single_{sel}")
                             if st.button("🗑️ حذف الدفعة", key=f"btn_del_single_{sel}"):
-                                delete_temporary_payment(did); load_payments.clear(); st.toast("تم الحذف", icon="🗑️"); st.rerun()
+                                delete_temporary_payment(did); st.toast("تم الحذف", icon="🗑️"); st.rerun()
                         with col_d2:
                             if st.button("🗑️ حذف كل الدفعات المؤقتة", key=f"btn_del_all_{sel}"):
-                                delete_all_temporary_payments(sel); load_payments.clear(); st.toast("تم حذف كل الدفعات المؤقتة", icon="🗑️"); st.rerun()
+                                delete_all_temporary_payments(sel); st.toast("تم حذف كل الدفعات المؤقتة", icon="🗑️"); st.rerun()
                 else:
                     st.info("لا دفعات مؤقتة على هذا العقد بعد")
 
@@ -2005,88 +1916,56 @@ elif menu == "التقارير":
                             try: td = hijri_to_gregorian(hi)
                             except: st.error("خطأ"); st.stop()
                         else: td = st.date_input("إلى", value=date.today(), key="kr_d2")
-
+                                        # ✅ خيار تضمين التأخيرات السابقة
                     include_past = st.checkbox(
-                        "☑️ تضمين الدفعات المتأخرة قبل بداية الفترة (كل الحركات التاريخية)",
-                        value=True,
+                        "☑️ تضمين الدفعات المتأخرة قبل بداية الفترة",
+                        value=False,
                         key=f"kashf_past_{tid}",
-                        help="عند التفعيل: يشمل كل الدفعات المستحقة من كل العقود (القديمة والجديدة) حتى نهاية الفترة"
+                        help="عند التفعيل: يشمل الدفعات المستحقة قبل بداية الفترة + كل الدفعات داخل الفترة"
                     )
 
                     conn = get_conn(); cur = conn.cursor()
                     tn_row = cur.execute("SELECT name, region FROM tenants WHERE id=?", (tid,)).fetchone()
                     if tn_row:
                         tn, tr = tn_row
-                        # ✅ رقم العقد الساري فقط
-                        cr = cur.execute("SELECT c.contract_number FROM contracts c WHERE c.tenant_id=? AND c.status='نشط' ORDER BY start_date DESC LIMIT 1", (tid,)).fetchone()
+                        cr = cur.execute("SELECT c.contract_number FROM contracts c WHERE c.tenant_id=? AND c.status='نشط' LIMIT 1", (tid,)).fetchone()
                         cno = cr[0] if cr else "لا يوجد"
-
-                        # ✅ سجل كل العقود للمستأجر
-                        all_contracts_count = cur.execute("SELECT COUNT(*) FROM contracts WHERE tenant_id=?", (tid,)).fetchone()[0]
-
+                        # ✅ استعلام مشروط
                         if include_past:
-                            # كل الدفعات التاريخية (مهما كان العقد)
                             pays = cur.execute('''SELECT id, due_date, amount, paid_amount, (amount-paid_amount), status, paid_date, attachment
-                                FROM payments WHERE tenant_id=? AND due_date <= ? ORDER BY due_date''',
+                                FROM payments WHERE tenant_id=? AND due_date <= ? AND (amount - paid_amount) > 0 ORDER BY due_date''',
                                 (tid, td.isoformat())).fetchall()
                         else:
                             pays = cur.execute('''SELECT id, due_date, amount, paid_amount, (amount-paid_amount), status, paid_date, attachment
                                 FROM payments WHERE tenant_id=? AND due_date BETWEEN ? AND ? ORDER BY due_date''',
                                 (tid, fd.isoformat(), td.isoformat())).fetchall()
-
-                        recs = cur.execute('''SELECT receipt_number, amount, receipt_date, payment_method, attachment
-                            FROM receipts WHERE tenant_id=? AND receipt_date BETWEEN ? AND ? ORDER BY receipt_date DESC''',
-                            (tid, fd.isoformat(), td.isoformat())).fetchall()
                         conn.close()
-
                         st.markdown(f"### كشف حساب: {tn}")
-                        st.write(f"**المنطقة:** {tr or '-'} | **رقم العقد الساري:** {cno} | **إجمالي العقود المسجلة:** {all_contracts_count}")
-                        if include_past:
-                            st.write(f"**الفترة:** كل الحركات حتى {td}")
-                        else:
-                            st.write(f"**الفترة:** {fd} - {td}")
-
-                        # ✅ عرض الكشف دائماً
+                        st.write(f"**المنطقة:** {tr or '-'} | **العقد:** {cno}")
+                        st.write(f"**الفترة:** {fd} - {td}")
                         if pays:
                             dfp = pd.DataFrame(pays, columns=["رقم الدفعة","الاستحقاق","المبلغ","المدفوع","المتبقي","الحالة","تاريخ السداد","المرفق"])
                             rtl_dataframe(dfp.drop(columns=["المرفق"]))
                             ta = sum(p[2] for p in pays); tp_ = sum(p[3] for p in pays)
-                        else:
-                            ta = 0.0; tp_ = 0.0
-                            st.info("ℹ️ لا توجد دفعات مسجلة خلال هذه الفترة")
-
-                        st.markdown("---")
-                        st.markdown("##### 💰 ملخص الحساب")
-                        mc1, mc2, mc3 = st.columns(3)
-                        mc1.metric("إجمالي المستحق", format_currency(ta))
-                        mc2.metric("إجمالي المدفوع", format_currency(tp_))
-                        remaining_val = ta - tp_
-                        if remaining_val == 0:
-                            mc3.metric("المتبقي", "0 ✅")
-                        else:
-                            mc3.metric("المتبقي", format_currency(remaining_val))
-
+                            st.write(f"**إجمالي المستحق:** {format_currency(ta)}")
+                            st.write(f"**إجمالي المدفوع:** {format_currency(tp_)}")
+                            st.write(f"**المتبقي:** {format_currency(ta - tp_)}")
+                        else: st.info("لا دفعات")
                         if recs:
-                            st.markdown("##### 📄 سندات القبض")
                             dfr = pd.DataFrame(recs, columns=["رقم السند","المبلغ","التاريخ","الطريقة","المرفق"])
                             rtl_dataframe(dfr.drop(columns=["المرفق"]))
-
-                        # ✅ التصدير يعمل دائماً
                         if pays:
                             dfe = pd.DataFrame([(p[1],p[2],p[3],p[2]-p[3],p[5],p[6]) for p in pays],
                                                columns=["الاستحقاق","المبلغ","المدفوع","المتبقي","الحالة","تاريخ السداد"])
-                        else:
-                            dfe = pd.DataFrame(columns=["الاستحقاق","المبلغ","المدفوع","المتبقي","الحالة","تاريخ السداد"])
-
-                        o = io.BytesIO()
-                        with pd.ExcelWriter(o, engine='xlsxwriter') as wr:
-                            dfe.to_excel(wr, sheet_name='الدفعات', index=False)
-                            if recs:
-                                pd.DataFrame([(r[0],r[1],r[2],r[3]) for r in recs],
-                                             columns=["رقم السند","المبلغ","التاريخ","الطريقة"]).to_excel(wr, sheet_name='سندات', index=False)
-                        st.download_button("تحميل Excel", data=o.getvalue(), file_name=f"kashf_{tn}.xlsx", key=f"dl_kashf_{tid}")
-                        ei = f"المنطقة: {tr or '-'} - العقد الساري: {cno} - إجمالي العقود: {all_contracts_count}"
-                        export_df_to_pdf(dfe, f"كشف حساب {tn}", f"kashf_{tn}.pdf", extra_info=ei, landscape_mode=landscape_choice)
+                            o = io.BytesIO()
+                            with pd.ExcelWriter(o, engine='xlsxwriter') as wr:
+                                dfe.to_excel(wr, sheet_name='الدفعات', index=False)
+                                if recs:
+                                    pd.DataFrame([(r[0],r[1],r[2],r[3]) for r in recs],
+                                                 columns=["رقم السند","المبلغ","التاريخ","الطريقة"]).to_excel(wr, sheet_name='سندات', index=False)
+                            st.download_button("تحميل Excel", data=o.getvalue(), file_name=f"kashf_{tn}.xlsx", key=f"dl_kashf_{tid}")
+                            ei = f"المنطقة: {tr or '-'} - رقم العقد: {cno}"
+                            export_df_to_pdf(dfe, f"كشف حساب {tn}", f"kashf_{tn}.pdf", extra_info=ei, landscape_mode=landscape_choice)
                     else:
                         conn.close(); st.warning("المستأجر لم يعد موجود")
         elif rt == "دفعات بين تاريخين":
@@ -2250,6 +2129,7 @@ elif menu == "التقارير":
                 c3.metric("إجمالي الدفعات المتأخرة", f"{int(df_due['num_overdue'].sum())} دفعة")
                 c4.metric("💵 إجمالي المبالغ المتبقية", format_currency(df_due['total_remaining'].sum()))
                 st.markdown("---")
+                st.markdown("#### 📤 تصدير التقرير")
                 df_export = df_selected.copy()
                 title_parts = [f"مستحقات سابقة حتى {td_due}"]
                 if rf_due != "الكل": title_parts.append(f"المنطقة: {rf_due}")
@@ -2387,8 +2267,8 @@ elif menu == "نسخ احتياطي":
                 comp_mb = comp_size / (1024 * 1024); orig_mb = orig_size / (1024 * 1024)
                 st.markdown(f"**حجم قاعدة البيانات الحالي:** {orig_mb:.2f} MB | **بعد الضغط:** {comp_mb:.2f} MB")
                 if comp_mb <= 20: st.success(f"✅ الحجم أقل من 20 ميجا")
-                elif comp_mb <= 50: st.warning(f"⚠️ الحجم بين 20 و 50 ميجا")
-                else: st.warning(f"⚠️ الحجم أكبر من 50 ميجا")
+                elif comp_mb <= 50: st.warning(f"⚠️ الحجم بين 20 و 50 ميجا - سيتم تقسيم الملف")
+                else: st.warning(f"⚠️ الحجم أكبر من 50 ميجا - سيتم تقسيم الملف")
             col_up, col_down = st.columns(2)
             with col_up:
                 st.markdown("### ⬆️ رفع النسخة")
