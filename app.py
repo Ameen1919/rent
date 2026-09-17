@@ -134,7 +134,6 @@ def parse_hijri_date(s):
         nums = [int(p) for p in parts]
     except:
         raise ValueError(f"يجب أن يكون التاريخ أرقاماً فقط: {s}")
-    # إذا الرقم الأول > 1300 فهو سنة هجرية → yyyy-mm-dd
     if nums[0] > 1300:
         y, m, d = nums
     else:
@@ -158,6 +157,15 @@ def gregorian_to_hijri(gd):
         gd = parse_date_safe(gd)
     h = convert.Gregorian(gd.year, gd.month, gd.day).to_hijri()
     return f"{h.day:02d}-{h.month:02d}-{h.year}"
+
+
+def add_hijri_months(y, m, d, months):
+    """يضيف عدد من الشهور الهجرية على (year, month, day) هجري"""
+    total_months = (y * 12 + (m - 1)) + months
+    new_y = total_months // 12
+    new_m = (total_months % 12) + 1
+    new_d = min(d, 30)
+    return new_y, new_m, new_d
 
 
 def wrap_text_for_pdf(text, max_chars_per_line):
@@ -722,30 +730,79 @@ def get_annual_rent_for_date(cid, td, default):
     return default
 
 
-def create_payment_schedule(cid, tid, sd, ed, ra, im):
-    step = relativedelta(months=im); cur_d = sd
+def create_payment_schedule(cid, tid, sd, ed, ra, im, calendar_type='ميلادي'):
+    """توليد جدول الدفعات — يدعم الهجري والميلادي"""
     conn = get_conn(); cur = conn.cursor(); cnt = 0
-    while cur_d <= ed:
-        ar = get_annual_rent_for_date(cid, cur_d.isoformat(), ra)
-        base = ar * im / 12.0
-        dp, da = calc_discount_for_date(cid, cur_d.isoformat())
-        final = base * (1 - dp / 100.0) - da
-        if final < 0: final = 0
-        cur.execute('INSERT INTO payments (contract_id, tenant_id, due_date, amount) VALUES (?,?,?,?)',
-                    (cid, tid, cur_d.isoformat(), final))
-        cur_d += step; cnt += 1
+
+    if calendar_type == 'هجري':
+        # ✅ نحسب بالتقويم الهجري
+        start_h = gregorian_to_hijri(sd)
+        d_h, m_h, y_h = map(int, start_h.split('-'))
+        cur_y, cur_m, cur_d = y_h, m_h, d_h
+        safety = 0
+        while safety < 500:
+            safety += 1
+            h_str = f"{cur_d:02d}-{cur_m:02d}-{cur_y}"
+            try:
+                g_date = hijri_to_gregorian(h_str)
+            except:
+                break
+            if g_date > ed:
+                break
+            ar_val = get_annual_rent_for_date(cid, g_date.isoformat(), ra)
+            base = ar_val * im / 12.0
+            dp, da = calc_discount_for_date(cid, g_date.isoformat())
+            final = base * (1 - dp / 100.0) - da
+            if final < 0: final = 0
+            cur.execute('INSERT INTO payments (contract_id, tenant_id, due_date, amount) VALUES (?,?,?,?)',
+                        (cid, tid, g_date.isoformat(), final))
+            cnt += 1
+            cur_y, cur_m, cur_d = add_hijri_months(cur_y, cur_m, cur_d, im)
+    else:
+        # الميلادي: الطريقة القديمة
+        step = relativedelta(months=im); cur_dt = sd
+        while cur_dt <= ed:
+            ar_val = get_annual_rent_for_date(cid, cur_dt.isoformat(), ra)
+            base = ar_val * im / 12.0
+            dp, da = calc_discount_for_date(cid, cur_dt.isoformat())
+            final = base * (1 - dp / 100.0) - da
+            if final < 0: final = 0
+            cur.execute('INSERT INTO payments (contract_id, tenant_id, due_date, amount) VALUES (?,?,?,?)',
+                        (cid, tid, cur_dt.isoformat(), final))
+            cur_dt += step; cnt += 1
+
     conn.commit(); conn.close()
     return cnt
 
 
-def create_payment_schedule_inline(cur, cid, tid, sd, ed, ra, im):
-    step = relativedelta(months=im); cur_d = sd
+def create_payment_schedule_inline(cur, cid, tid, sd, ed, ra, im, calendar_type='ميلادي'):
     cnt = 0
-    while cur_d <= ed:
-        base = ra * im / 12.0
-        cur.execute('INSERT INTO payments (contract_id, tenant_id, due_date, amount) VALUES (?,?,?,?)',
-                    (cid, tid, cur_d.isoformat(), base))
-        cur_d += step; cnt += 1
+    if calendar_type == 'هجري':
+        start_h = gregorian_to_hijri(sd)
+        d_h, m_h, y_h = map(int, start_h.split('-'))
+        cur_y, cur_m, cur_d = y_h, m_h, d_h
+        safety = 0
+        while safety < 500:
+            safety += 1
+            h_str = f"{cur_d:02d}-{cur_m:02d}-{cur_y}"
+            try:
+                g_date = hijri_to_gregorian(h_str)
+            except:
+                break
+            if g_date > ed:
+                break
+            base = ra * im / 12.0
+            cur.execute('INSERT INTO payments (contract_id, tenant_id, due_date, amount) VALUES (?,?,?,?)',
+                        (cid, tid, g_date.isoformat(), base))
+            cnt += 1
+            cur_y, cur_m, cur_d = add_hijri_months(cur_y, cur_m, cur_d, im)
+    else:
+        step = relativedelta(months=im); cur_dt = sd
+        while cur_dt <= ed:
+            base = ra * im / 12.0
+            cur.execute('INSERT INTO payments (contract_id, tenant_id, due_date, amount) VALUES (?,?,?,?)',
+                        (cid, tid, cur_dt.isoformat(), base))
+            cur_dt += step; cnt += 1
     return cnt
 
 
@@ -1066,7 +1123,7 @@ def import_contracts_from_excel(f):
                     VALUES (?,?,?,?,?,?,?,?,?,?,?,?)''',
                     (tid, pid, cnum, sd.isoformat(), ed.isoformat(), ra, im, da, nt, ti, tr, 'ميلادي'))
                 cid = cur.lastrowid
-                create_payment_schedule_inline(cur, cid, tid, sd, ed, ra, im)
+                create_payment_schedule_inline(cur, cid, tid, sd, ed, ra, im, 'ميلادي')
                 imp += 1
                 if imp % 10 == 0: conn.commit()
             except Exception as e:
@@ -1155,7 +1212,8 @@ def add_contract_full(tid, pid, cn, sd, ed, ra, im, da, ti, tr, nt, fb, calendar
         (tid, pid, cn, sd.isoformat(), ed.isoformat(), ra, im, da, nt, ti, tr, fb, calendar_type, hs, he))
     cid = cur.lastrowid
     conn.commit(); conn.close()
-    create_payment_schedule(cid, tid, sd, ed, ra, im)
+    # ✅ مرر نوع التقويم
+    create_payment_schedule(cid, tid, sd, ed, ra, im, calendar_type)
     st.cache_data.clear()
     return True, "تم إنشاء العقد بنجاح", cn
 
@@ -1293,7 +1351,6 @@ if menu == "لوحة التحكم" and has_permission(current_user_id, "لوحة
     c8.metric("⚠️ دفعات متأخرة", f"{count_overdue} دفعة")
     st.markdown("---")
 
-    # ✅ قسم العقود القريبة من الانتهاء
     st.subheader("⏰ العقود التي ستنتهي خلال 60 يوم")
     expiring = get_expiring_contracts(60)
     if expiring:
@@ -1303,10 +1360,11 @@ if menu == "لوحة التحكم" and has_permission(current_user_id, "لوحة
                 if days_left <= 15: badge = "🔴"
                 elif days_left <= 30: badge = "🟠"
                 else: badge = "🟡"
+                hijri_end = gregorian_to_hijri(parse_date_safe(e['end_date']))
                 st.markdown(f"""
                 {badge} **{e['tenant_name']}** — عقد: `{e['contract_number']}`  
                 📞 {e['tenant_phone'] or '-'} | 🏢 {e['prop_name']} | 📍 {e['tenant_region'] or '-'}  
-                📅 ينتهي: **{e['end_date']}** — متبقي **{days_left}** يوم  
+                📅 ينتهي: **{e['end_date']} م** ({hijri_end} هـ) — متبقي **{days_left}** يوم  
                 💰 الإيجار السنوي: {format_currency(e['rent_amount'])} | الدورية: كل {e['interval_months']} شهر
                 """)
                 st.markdown("---")
@@ -1325,7 +1383,16 @@ if menu == "لوحة التحكم" and has_permission(current_user_id, "لوحة
     st.subheader("📅 دفعات خلال 30 يوم")
     if not df_p.empty:
         up = df_p[(df_p["تاريخ الاستحقاق"]>=today.isoformat()) & (df_p["تاريخ الاستحقاق"]<=(today+timedelta(days=30)).isoformat()) & (df_p["الحالة"].isin(["مستحق","جزئي"]))]
-        if not up.empty: rtl_dataframe(up[["المستأجر","العقار","تاريخ الاستحقاق","المبلغ","المدفوع","المتبقي","الحالة"]])
+        if not up.empty:
+            up_disp = up[["المستأجر","العقار","تاريخ الاستحقاق","المبلغ","المدفوع","المتبقي","الحالة"]].copy()
+            up_disp.insert(
+                list(up_disp.columns).index("تاريخ الاستحقاق") + 1,
+                "الاستحقاق (هجري)",
+                up_disp["تاريخ الاستحقاق"].apply(
+                    lambda x: gregorian_to_hijri(parse_date_safe(x)) if x and str(x).strip() else ""
+                )
+            )
+            rtl_dataframe(up_disp)
         else: st.info("لا توجد دفعات")
 
 elif menu == "إدارة البيانات":
@@ -1523,7 +1590,6 @@ elif menu == "إدارة البيانات":
                 uf = st.file_uploader("استيراد", type=["xlsx","xls"], key="imp_c")
                 if uf and st.button("تنفيذ", key="btn_imp_c"): import_contracts_from_excel(uf); st.rerun()
 
-            # ✅ إضافة عقد - الـ radio خارج الـ form
             if st.button("➕ إضافة عقد", key="btn_add_c"): st.session_state['show_add_c'] = True
             if st.session_state.get('show_add_c'):
                 at = get_active_tenants()
@@ -1554,7 +1620,7 @@ elif menu == "إدارة البيانات":
                             )
 
                             if cal_type == "هجري":
-                                st.info("📅 أدخل التواريخ بصيغة هجري: **dd-mm-yyyy** — مثال: `01-01-1445`")
+                                st.info("📅 أدخل التواريخ بصيغة هجري: **dd-mm-yyyy** — مثال: `01-10-1445`")
                                 hc1, hc2 = st.columns(2)
                                 hs = hc1.text_input("البداية (هجري)", value=gregorian_to_hijri(date.today()), key="add_c_hs")
                                 he = hc2.text_input("النهاية (هجري)", value=gregorian_to_hijri(date.today() + relativedelta(years=1)), key="add_c_he")
@@ -1670,7 +1736,8 @@ elif menu == "إدارة البيانات":
                                     conn = get_conn(); cur = conn.cursor()
                                     cur.execute("DELETE FROM payments WHERE contract_id=? AND (is_temporary IS NULL OR is_temporary=0)", (cid,))
                                     conn.commit(); conn.close()
-                                    cnt = create_payment_schedule(cid, ci['tenant_id'], parse_date_safe(ci['start_date']), parse_date_safe(ci['end_date']), ci['rent_amount'], ci['interval_months'])
+                                    cal_t = ci['calendar_type'] if 'calendar_type' in ci.keys() else 'ميلادي'
+                                    cnt = create_payment_schedule(cid, ci['tenant_id'], parse_date_safe(ci['start_date']), parse_date_safe(ci['end_date']), ci['rent_amount'], ci['interval_months'], cal_t or 'ميلادي')
                                     st.toast(f"تم إعادة توليد {cnt} دفعة", icon="✅"); st.rerun()
                             with adv[1]:
                                 st.markdown("#### رسوم إضافية (معفاة من الضريبة افتراضياً)")
@@ -1714,7 +1781,8 @@ elif menu == "إدارة البيانات":
                                     conn = get_conn(); cur = conn.cursor()
                                     cur.execute("DELETE FROM payments WHERE contract_id=? AND (is_temporary IS NULL OR is_temporary=0)", (cid,))
                                     conn.commit(); conn.close()
-                                    cnt = create_payment_schedule(cid, ci['tenant_id'], parse_date_safe(ci['start_date']), parse_date_safe(ci['end_date']), ci['rent_amount'], ci['interval_months'])
+                                    cal_t = ci['calendar_type'] if 'calendar_type' in ci.keys() else 'ميلادي'
+                                    cnt = create_payment_schedule(cid, ci['tenant_id'], parse_date_safe(ci['start_date']), parse_date_safe(ci['end_date']), ci['rent_amount'], ci['interval_months'], cal_t or 'ميلادي')
                                     st.toast(f"تم إعادة توليد {cnt} دفعة", icon="✅"); st.rerun()
                             if current_role == 'مدير':
                                 c1, c2 = st.columns(2)
@@ -1752,7 +1820,8 @@ elif menu == "إدارة البيانات":
                                                     (tid, pid, cn, sd.isoformat(), ed.isoformat(), ra, im, da, 1 if ti else 0, tr, nt, fb, cid))
                                                 cur.execute("DELETE FROM payments WHERE contract_id=? AND (is_temporary IS NULL OR is_temporary=0)", (cid,))
                                                 conn.commit(); conn.close()
-                                                cnt = create_payment_schedule(cid, tid, sd, ed, ra, im)
+                                                cal_t = cd['calendar_type'] if 'calendar_type' in cd.keys() else 'ميلادي'
+                                                cnt = create_payment_schedule(cid, tid, sd, ed, ra, im, cal_t or 'ميلادي')
                                                 st.cache_data.clear(); st.toast(f"تم التحديث ({cnt} دفعة)", icon="✅")
                                                 st.session_state['edit_contract_id'] = None; st.rerun()
                 else: st.info("لا عقود")
@@ -1782,7 +1851,23 @@ elif menu == "الدفعات":
                 sq = st.text_input("بحث", key="ps_")
                 f = dfp_f[dfp_f["المستأجر"].str.contains(sq, case=False, na=False)] if sq else dfp_f
                 if not f.empty:
-                    f_disp = f.drop(columns=["المرفق","معرف_المستأجر"])
+                    f_disp = f.drop(columns=["المرفق","معرف_المستأجر"]).copy()
+                    if "تاريخ الاستحقاق" in f_disp.columns:
+                        f_disp.insert(
+                            list(f_disp.columns).index("تاريخ الاستحقاق") + 1,
+                            "الاستحقاق (هجري)",
+                            f_disp["تاريخ الاستحقاق"].apply(
+                                lambda x: gregorian_to_hijri(parse_date_safe(x)) if x and str(x).strip() else ""
+                            )
+                        )
+                    if "تاريخ السداد" in f_disp.columns:
+                        f_disp.insert(
+                            list(f_disp.columns).index("تاريخ السداد") + 1,
+                            "السداد (هجري)",
+                            f_disp["تاريخ السداد"].apply(
+                                lambda x: gregorian_to_hijri(parse_date_safe(x)) if x and str(x).strip() else ""
+                            )
+                        )
                     display_dataframe_with_reorder(f_disp, "payments")
                     st.markdown("### 📄 خيارات الطباعة")
                     orient1 = st.radio("اتجاه الصفحة", ["عمودي (Portrait)", "أفقي (Landscape)"], horizontal=True, key="pay_orient")
@@ -1854,7 +1939,6 @@ elif menu == "سندات القبض":
         t1, t2 = st.tabs(["تسجيل سداد","سجل السندات"])
         with t1:
             if current_role in ['مدير','محاسب']:
-                # ✅ فلتر المنطقة أولاً ثم المستأجر
                 all_tenants_for_pay = load_tenants()
                 if all_tenants_for_pay.empty:
                     st.warning("لا مستأجرين")
@@ -1908,16 +1992,29 @@ elif menu == "سندات القبض":
                         st.info("لا دفعات مستحقة")
                     else:
                         dfd = pd.DataFrame(dues, columns=["رقم الدفعة","الاستحقاق","المبلغ","المدفوع","المتبقي","رقم العقد"])
-                        rtl_dataframe(dfd.drop(columns=["رقم العقد"]))
-                        pid = st.selectbox("الدفعة", dfd["رقم الدفعة"].tolist(),
-                                          format_func=lambda x: f"دفعة {x} - استحقاق: {dfd[dfd['رقم الدفعة']==x]['الاستحقاق'].iloc[0]}",
-                                          key="sel_pay_pay")
+                        dfd["الاستحقاق (هجري)"] = dfd["الاستحقاق"].apply(
+                            lambda x: gregorian_to_hijri(parse_date_safe(x)) if x else ""
+                        )
+                        dfd_show = dfd[["رقم الدفعة","الاستحقاق","الاستحقاق (هجري)","المبلغ","المدفوع","المتبقي"]]
+                        rtl_dataframe(dfd_show)
+                        pid = st.selectbox(
+                            "الدفعة",
+                            dfd["رقم الدفعة"].tolist(),
+                            format_func=lambda x: (
+                                f"دفعة {x} — ميلادي: {dfd[dfd['رقم الدفعة']==x]['الاستحقاق'].iloc[0]} — "
+                                f"هجري: {dfd[dfd['رقم الدفعة']==x]['الاستحقاق (هجري)'].iloc[0]}"
+                            ),
+                            key="sel_pay_pay"
+                        )
                         if pid:
                             od = [d for d in dues if d[0]==pid][0]
                             rem = od[4]; due_dt = od[1]
                             is_advance = due_dt > today.isoformat()
+                            hijri_due = gregorian_to_hijri(parse_date_safe(due_dt))
                             if is_advance:
-                                st.success(f"🔮 **هذه دفعة مقدمة** (الاستحقاق في المستقبل: {due_dt})")
+                                st.success(f"🔮 **هذه دفعة مقدمة** — الاستحقاق: **{due_dt} م** ({hijri_due} هـ)")
+                            else:
+                                st.info(f"📅 **الاستحقاق:** {due_dt} م ({hijri_due} هـ)")
                             pdte = st.date_input("تاريخ السداد", value=today, key="pay_date_in")
                             am = st.number_input("المبلغ", min_value=0.0, max_value=float(rem), value=float(rem), step=100.0, key="pay_amt_in")
                             mt = st.selectbox("طريقة الدفع", ["نقدي","تحويل بنكي","شيك","دفع في المنصة"], key="pay_mt_in")
