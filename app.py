@@ -1617,29 +1617,25 @@ elif menu == "الدفعات":
     if not has_permission(current_user_id, "الدفعات"): st.error("لا تملك صلاحية")
     else:
         t1, t2 = st.tabs(["عرض الدفعات","تعديل دفعة"])
-                with t1:
+        with t1:
             sf = st.selectbox("الحالة", ["الكل","مستحق","مدفوع","متأخر","جزئي"])
             dfp = load_payments(sf)
             if not dfp.empty:
-                # ✅ فلاتر المنطقة والمستأجر
                 ff1, ff2 = st.columns(2)
                 with ff1:
                     regions_list_p = ["الكل"] + sorted([r for r in dfp["المنطقة"].dropna().unique().tolist() if r])
                     sel_region_p = st.selectbox("المنطقة", regions_list_p, key="pay_region_flt")
                 with ff2:
-                    # المستأجرين مرتبطين بالمنطقة المختارة
                     if sel_region_p != "الكل":
                         tenants_in_region = sorted(dfp[dfp["المنطقة"] == sel_region_p]["المستأجر"].dropna().unique().tolist())
                     else:
                         tenants_in_region = sorted(dfp["المستأجر"].dropna().unique().tolist())
                     sel_tenant_p = st.selectbox("المستأجر", ["الكل"] + tenants_in_region, key="pay_tenant_flt")
-
                 dfp_f = dfp.copy()
                 if sel_region_p != "الكل":
                     dfp_f = dfp_f[dfp_f["المنطقة"] == sel_region_p]
                 if sel_tenant_p != "الكل":
                     dfp_f = dfp_f[dfp_f["المستأجر"] == sel_tenant_p]
-
                 sq = st.text_input("بحث", key="ps_")
                 f = dfp_f[dfp_f["المستأجر"].str.contains(sq, case=False, na=False)] if sq else dfp_f
                 if not f.empty:
@@ -1702,7 +1698,8 @@ elif menu == "الدفعات":
                                         conn = get_conn(); cur = conn.cursor()
                                         cur.execute("UPDATE payments SET due_date=?, amount=?, status=?, notes=? WHERE id=?",
                                                     (dd.isoformat(), am, stt, nt, pid))
-                                        conn.commit(); conn.close(); st.cache_data.clear()
+                                        conn.commit(); conn.close()
+                                        load_payments.clear()
                                         st.toast("تم التعديل", icon="✅"); st.rerun()
                 else: st.info("لا دفعات")
             else: st.warning("ليس لديك صلاحية")
