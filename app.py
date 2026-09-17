@@ -397,9 +397,34 @@ def run_force_migrations():
         conn.close()
     except Exception:
         pass
+def run_force_migrations():
+    """تضمن وجود الأعمدة الجديدة - تعمل في كل تشغيل"""
+    try:
+        conn = sqlite3.connect("rentals.db", timeout=10)
+        conn.execute("PRAGMA busy_timeout=30000;")
+        cur = conn.cursor()
+        try:
+            cur.execute("PRAGMA table_info(payments)")
+            pay_cols = [c[1] for c in cur.fetchall()]
+            if 'is_advance' not in pay_cols:
+                cur.execute("ALTER TABLE payments ADD COLUMN is_advance INTEGER DEFAULT 0")
+        except: pass
+        try:
+            cur.execute("PRAGMA table_info(contracts)")
+            con_cols = [c[1] for c in cur.fetchall()]
+            if 'calendar_type' not in con_cols:
+                cur.execute("ALTER TABLE contracts ADD COLUMN calendar_type TEXT DEFAULT 'ميلادي'")
+            if 'hijri_start_date' not in con_cols:
+                cur.execute("ALTER TABLE contracts ADD COLUMN hijri_start_date TEXT")
+            if 'hijri_end_date' not in con_cols:
+                cur.execute("ALTER TABLE contracts ADD COLUMN hijri_end_date TEXT")
+        except: pass
+        conn.commit()
+        conn.close()
+    except Exception:
+        pass
 
-@st.cache_resource
-def init_db():
+
 @st.cache_resource
 def init_db():
     conn = get_conn(); cur = conn.cursor()
@@ -429,8 +454,8 @@ def init_db():
     cur.execute('''CREATE TABLE IF NOT EXISTS contract_discounts (
                    id INTEGER PRIMARY KEY AUTOINCREMENT, contract_id INTEGER, discount_type TEXT DEFAULT 'نسبة',
                    discount_value REAL, start_date TEXT, end_date TEXT, reason TEXT, created_at TEXT DEFAULT CURRENT_TIMESTAMP)''')
-    ensure_columns(cur, 'payments', ['due_date','paid_date','attachment','is_temporary','temporary_note'])
-    ensure_columns(cur, 'contracts', ['interval_months','tax_included','tax_rate','contract_file','is_temporary'])
+    ensure_columns(cur, 'payments', ['due_date','paid_date','attachment','is_temporary','temporary_note','is_advance'])
+    ensure_columns(cur, 'contracts', ['interval_months','tax_included','tax_rate','contract_file','is_temporary','calendar_type','hijri_start_date','hijri_end_date'])
     ensure_columns(cur, 'receipts', ['attachment'])
     cur.execute("SELECT COUNT(*) FROM users")
     if cur.fetchone()[0] == 0:
