@@ -1537,39 +1537,63 @@ elif menu == "إدارة البيانات":
             with ci2:
                 uf = st.file_uploader("استيراد", type=["xlsx","xls"], key="imp_c")
                 if uf and st.button("تنفيذ", key="btn_imp_c"): import_contracts_from_excel(uf); st.rerun()
-            if st.button("➕ إضافة عقد", key="btn_add_c"): st.session_state['show_add_c'] = True
+                        if st.button("➕ إضافة عقد", key="btn_add_c"): st.session_state['show_add_c'] = True
             if st.session_state.get('show_add_c'):
                 at = get_active_tenants()
-                if not at: st.warning("لا يوجد مستأجرين متاحين")
+                if not at:
+                    st.warning("لا يوجد مستأجرين متاحين")
                 else:
+                    # ✅ اختيار نوع التقويم خارج الـ form ليتم التحديث فوراً
+                    st.markdown("### 📅 نوع التقويم")
+                    cal_type = st.radio(
+                        "اختر نوع التقويم",
+                        ["ميلادي", "هجري"],
+                        horizontal=True,
+                        key="add_c_cal_type",
+                        help="عند اختيار 'هجري' ستظهر لك حقول لإدخال التواريخ الهجرية مع التحويل التلقائي للميلادي"
+                    )
+                    st.markdown("---")
+
                     with st.form("add_c_f"):
                         to = {t[0]: t[1] for t in at}
                         tid = st.selectbox("المستأجر *", options=list(to.keys()), format_func=lambda x: to[x])
                         po = {p[0]: p[1] for p in get_all_properties()}
-                        if not po: st.warning("لا توجد عقارات")
+                        if not po:
+                            st.warning("لا توجد عقارات")
                         else:
                             pid = st.selectbox("العقار *", options=list(po.keys()), format_func=lambda x: po[x])
-                            cn_input = st.text_input("رقم العقد (اتركه فارغاً للتوليد التلقائي)", value="",
-                                                    placeholder="مثال: CTR-2025-001")
-                            # ✅ اختيار نوع التقويم
-                            cal_type = st.radio("نوع التقويم", ["ميلادي", "هجري"], horizontal=True,
-                                                help="إذا اخترت هجري، ستحتاج لإدخال التواريخ الهجرية")
+                            cn_input = st.text_input(
+                                "رقم العقد (اتركه فارغاً للتوليد التلقائي)", value="",
+                                placeholder="مثال: CTR-2025-001"
+                            )
+
+                            # ✅ حقول التاريخ حسب التقويم المختار
                             if cal_type == "هجري":
-                                st.info("📅 أدخل التواريخ بصيغة هجري: **dd-mm-yyyy** (مثال: 01-01-1445)")
+                                st.info("📅 أدخل التواريخ بصيغة هجري: **dd-mm-yyyy** — مثال: `01-01-1445`")
                                 hc1, hc2 = st.columns(2)
-                                hs = hc1.text_input("البداية (هجري)", value=gregorian_to_hijri(date.today()))
-                                he = hc2.text_input("النهاية (هجري)", value=gregorian_to_hijri(date.today() + relativedelta(years=1)))
+                                hs = hc1.text_input(
+                                    "البداية (هجري)",
+                                    value=gregorian_to_hijri(date.today()),
+                                    key="add_c_hs"
+                                )
+                                he = hc2.text_input(
+                                    "النهاية (هجري)",
+                                    value=gregorian_to_hijri(date.today() + relativedelta(years=1)),
+                                    key="add_c_he"
+                                )
+                                # معاينة التحويل (تظهر دائماً لأن cal_type محدّث)
                                 try:
                                     sd = hijri_to_gregorian(hs)
                                     ed = hijri_to_gregorian(he)
-                                    st.success(f"✅ الميلادي: {sd} → {ed}")
+                                    st.success(f"✅ التاريخ الميلادي المقابل: **{sd}** ← **{ed}**")
                                 except Exception as e:
-                                    st.error(f"صيغة التاريخ الهجري خطأ: {e}")
+                                    st.error(f"⚠️ صيغة التاريخ الهجري خطأ ({e}) — استخدم dd-mm-yyyy")
                                     sd = date.today()
                                     ed = date.today() + relativedelta(years=1)
                             else:
-                                sd = st.date_input("البداية", value=date.today())
-                                ed = st.date_input("النهاية", value=date.today() + relativedelta(years=1))
+                                sd = st.date_input("البداية (ميلادي)", value=date.today(), key="add_c_sd")
+                                ed = st.date_input("النهاية (ميلادي)", value=date.today() + relativedelta(years=1), key="add_c_ed")
+
                             ra = st.number_input("الإيجار السنوي", min_value=0.0, step=1000.0, value=0.0)
                             im = st.number_input("الدورية (شهور)", min_value=1, value=1)
                             da = st.number_input("التأمين", min_value=0.0, step=100.0, value=0.0)
@@ -1578,18 +1602,29 @@ elif menu == "إدارة البيانات":
                             nt = st.text_area("ملاحظات")
                             cf = st.file_uploader("ملف العقد", type=["pdf"])
                             cs, cc = st.columns(2)
-                            s = cs.form_submit_button("حفظ"); c = cc.form_submit_button("إلغاء")
+                            s = cs.form_submit_button("حفظ")
+                            c = cc.form_submit_button("إلغاء")
+
                             if s:
-                                if sd >= ed: st.error("تاريخ النهاية يجب أن يكون بعد البداية")
+                                if sd >= ed:
+                                    st.error("تاريخ النهاية يجب أن يكون بعد البداية")
                                 else:
                                     fb = cf.read() if cf else None
-                                    ok, msg, final_cn = add_contract_full(tid, pid, cn_input.strip() if cn_input.strip() else "",
-                                                                         sd, ed, ra, im, da, 1 if ti else 0, tr, nt, fb, cal_type)
+                                    ok, msg, final_cn = add_contract_full(
+                                        tid, pid,
+                                        cn_input.strip() if cn_input.strip() else "",
+                                        sd, ed, ra, im, da, 1 if ti else 0, tr, nt, fb,
+                                        cal_type
+                                    )
                                     if ok:
                                         st.toast(f"✅ {msg} - رقم العقد: {final_cn}", icon="✅")
-                                        st.session_state['show_add_c'] = False; st.rerun()
-                                    else: st.error(msg)
-                            if c: st.session_state['show_add_c'] = False; st.rerun()
+                                        st.session_state['show_add_c'] = False
+                                        st.rerun()
+                                    else:
+                                        st.error(msg)
+                            if c:
+                                st.session_state['show_add_c'] = False
+                                st.rerun()
             st.markdown("---")
             dfc = load_contracts()
             if not dfc.empty:
