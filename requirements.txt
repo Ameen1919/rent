@@ -1,9 +1,8 @@
 streamlit
 pandas
-libsql-client
+requests
 hijri-converter
 reportlab
-requests
 arabic-reshaper
 python-bidi
 xlsxwriter
