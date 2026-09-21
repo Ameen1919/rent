@@ -1,78 +1,78 @@
-# مشروع نظام إدارة الإيجارات - ملاحظات المشروع
+مشروع نظام إدارة الإيجارات - ملاحظات المشروع
+=============================================
 
 ## نظرة عامة
 تطبيق Streamlit لإدارة عقود إيجار ودفعات وسندات قبض، يستخدم:
-- **قاعدة البيانات**: Turso (libsql) - cloud - عبر HTTP Pipeline API (بدون WebSocket)
-- **المرفقات**: تيليجرام (file_id في قاعدة البيانات)
-- **النسخ الاحتياطي**: JSON + gzip على تيليجرام + تحميل يدوي
-- **الاستضافة**: Streamlit Community Cloud
-- **GitHub**: https://github.com/Ameen1919/rent
-- **رابط التطبيق**: https://rentameen.streamlit.app
-- **Turso Database**: backup2026-09-19 (ameen1920, rentals-group)
-- **Telegram Bot**: @rentsolimanbot
-- **Telegram Group**: Ameen and inventory backup (chat_id: -10024445645793)
+- قاعدة البيانات: Turso (libsql) - cloud - عبر HTTP Pipeline API
+- المرفقات: تيليجرام (file_id مخزن في DB)
+- النسخ الاحتياطي: JSON + gzip على تيليجرام
+- الاستضافة: Streamlit Community Cloud
+- GitHub: https://github.com/Ameen1919/rent
+- رابط التطبيق: https://rentameen.streamlit.app
 
-## البنية التقنية
-- **الملف الرئيسي**: app.py
-- **المكتبات**: streamlit, pandas, requests, hijri-converter, reportlab, arabic-reshaper, python-bidi
-- **Secrets**: TURSO_URL, TURSO_TOKEN + [telegram] (bot_token, chat_id)
+## بيانات مهمة
+- Turso DB: backup2026-09-19
+- Turso Account: ameen1920
+- Turso Group: rentals-group
+- Telegram Bot: @rentsolimanbot
+- Chat ID: -10024445645793
+
+## Secrets المطلوبة
+TURSO_URL = "https://backup2026-09-19-ameen1920.turso.io"
+TURSO_TOKEN = "eyJ..."
+[telegram]
+bot_token = "..."
+chat_id = "-10024445645793"
 
 ## التحديات التقنية التي تم حلها
-1. **libsql-client لا يعمل على Streamlit Cloud** (WSServerHandshakeError)
-   → تم الحل بالاتصال المباشر عبر HTTP Pipeline API بدون مكتبة libsql
-2. **بطء الاتصال بسبب WebSocket**
-   → تم استخدام requests.Session مع Connection Pooling
-3. **كل INSERT يحتاج استعلام إضافي لـ last_insert_rowid**
-   → استخدام RETURNING id
-4. **التقارير بطيئة بسبب استعلامات متعددة**
-   → Batch Requests في طلب HTTP واحد
-5. **المرفقات تُفقد على Cloud**
-   → تُرفع على تيليجرام ويُخزن file_id
-6. **التواريخ الهجرية** تُحسب في التقويم الميلادي
-   → استخدام add_hijri_months للدفعات الهجرية
+1. libsql-client لا يعمل على Streamlit Cloud (WSServerHandshakeError)
+   → الحل: HTTP Pipeline API مباشرة
+2. بطء الاتصال → Connection Pooling (requests.Session + HTTPAdapter)
+3. كل INSERT يستدعي استعلام إضافي → RETURNING id
+4. التقارير بطيئة → execute_batch (طلبات مجمعة)
+5. استيراد Excel بطيء → execute_write_batch (دفعات 50 صف)
+6. المرفقات تُفقد على Cloud → رفع على Telegram + file_id
+7. التواريخ الهجرية تُحسب خطأ → add_hijri_months
+8. زر القفل الجانبي في الشمال → CSS RTL مخصص
 
-## الميزات الحالية
-- تسجيل دخول بأدوار (مدير/محاسب/مشاهد) + صلاحيات دقيقة
-- إدارة مستأجرين، عقود، عقارات
-- دعم عقود ميلادية + هجرية مع تحويل تلقائي
+## الميزات
+- تسجيل دخول بأدوار + صلاحيات دقيقة
+- إدارة مستأجرين / عقود / عقارات
+- عقود ميلادية وهجرية مع تحويل تلقائي
 - دفعات مقدمة (is_advance)
-- رصيد سابق مُرحّل عند إنشاء عقد جديد
-- منع تداخل العقود النشطة لنفس المستأجر
-- سندات القبض (إنشاء/تعديل/حذف كامل)
-- كشف حساب مستأجر (يشمل كل العقود)
-- تقارير: دفعات/إيرادات/ضرائب/مستحقات
+- رصيد سابق مُرحّل
+- منع تداخل العقود النشطة
+- سندات قبض (إضافة/تعديل/حذف كامل)
+- كشف حساب يجمع كل العقود
+- تقارير: دفعات، إيرادات، ضرائب، مستحقات
 - عقود منتهية + دفعات مؤقتة
-- نسخ احتياطي JSON مضغوط على تيليجرام
-- تصدير Excel + PDF (RTL عربي)
+- نسخ احتياطي JSON على تيليجرام
+- تصدير Excel + PDF (RTL)
+- استيراد Excel بدفعات (batch 50)
+- sidebar على شكل Wafeq (RTL + زر اليمين)
 
-## بنية قاعدة البيانات (Turso)
-- settings, users
-- tenants, properties, contracts
-- payments, receipts
-- alerts, contract_pricing_tiers
-- additional_fees, contract_discounts
+## بنية قاعدة البيانات
+- settings, users, tenants, properties
+- contracts (مع calendar_type, hijri_*)
+- payments (مع is_advance, is_temporary)
+- receipts, alerts
+- contract_pricing_tiers, additional_fees, contract_discounts
 
-## قواعد مهمة
-- **ممنوع استخدام libsql-client** (لا يعمل على Streamlit Cloud)
-- استخدم `_clean_turso_url()` لتحويل libsql:// → https://
-- **لا تغلق الاتصال** — محفوظ في st.session_state.db_conn
-- **استخدم `RETURNING id`** في INSERT لجلب الـ id
-- **استخدم `conn.execute_batch()`** في التقارير
-- المرفقات: file_id يبدأ بـ AgAC/BQAC/BAAC
+## قواعد مهمة جداً
+- ممنوع libsql-client (لا يعمل على Cloud)
+- استخدم _clean_turso_url() لتحويل libsql:// → https://
+- لا تغلق الاتصال (st.session_state.db_conn)
+- استخدم RETURNING id في INSERT لجلب id
+- استخدم execute_batch() للـ SELECT المتعددة
+- استخدم execute_write_batch() للـ INSERT/UPDATE/DELETE المتعددة
+- المرفقات: file_id يبدأ بـ AgAC / BQAC / BAAC
 - التواريخ في DB: نص ISO (YYYY-MM-DD)
-- التواريخ الهجرية للإدخال: dd-mm-yyyy
-
-## التحسينات المطبقة للأداء
-1. **Connection Pooling**: requests.Session مع HTTPAdapter
-2. **RETURNING id**: بدل last_insert_rowid المنفصل
-3. **Batch Requests**: تنفيذ عدة SELECT في طلب واحد
-4. **Caching**: st.cache_data(ttl=30-120)
+- الهجري للإدخال: dd-mm-yyyy
+- RTL sidebar: CSS في أعلى app.py
 
 ## الأفكار المستقبلية
-- [ ] تقارير رسومية (Charts)
-- [ ] تنبيهات تلقائية على تيليجرام عند انتهاء العقود
-- [ ] صلاحيات دقيقة لكل مستخدم
+- [ ] تقارير رسومية
+- [ ] تنبيهات تلقائية على تيليجرام
 - [ ] سجل تدقيق (Audit Log)
-- [ ] الباركود / QR للمستأجرين
-- [ ] دفع عبر الإنترنت
+- [ ] QR / باركود
 - [ ] نسخ احتياطي تلقائي يومي
