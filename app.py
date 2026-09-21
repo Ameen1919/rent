@@ -43,7 +43,7 @@ st.markdown("""
 
 
 # =====================================================
-# الإعدادات: Turso + Telegram
+# Config
 # =====================================================
 try:
     TURSO_URL = st.secrets["TURSO_URL"]
@@ -63,14 +63,12 @@ if not TURSO_URL or not TURSO_TOKEN:
     st.error("⚠️ يجب إعداد TURSO_URL و TURSO_TOKEN في Secrets")
     st.stop()
 
-# تنظيف الرابط: تحويل libsql:// إلى https:// وإزالة aws-xxx
+
 def _clean_turso_url(u):
     u = u.strip().rstrip("/")
     u = u.replace("libsql://", "https://").replace("wss://", "https://")
-    # إزالة region من الرابط إن وجد
     u = u.replace(".aws-us-east-1.", ".").replace(".aws-eu-west-1.", ".").replace(".aws-ap-northeast-1.", ".")
-    if not u.startswith("http"):
-        u = "https://" + u
+    if not u.startswith("http"): u = "https://" + u
     return u
 
 TURSO_URL_CLEAN = _clean_turso_url(TURSO_URL)
@@ -78,7 +76,7 @@ TURSO_PIPELINE = f"{TURSO_URL_CLEAN}/v2/pipeline"
 
 
 # =====================================================
-# Turso HTTP Client (Pipeline API - بدون WebSocket)
+# Turso HTTP Client (Pipeline API + Connection Pooling)
 # =====================================================
 class DictRow:
     def __init__(self, columns, values):
@@ -104,35 +102,24 @@ class DictRow:
 
 
 def _encode_arg(p):
-    """تحويل قيمة Python إلى صيغة Turso arg"""
-    if p is None:
-        return {"type": "null"}
-    if isinstance(p, bool):
-        return {"type": "integer", "value": "1" if p else "0"}
-    if isinstance(p, int):
-        return {"type": "integer", "value": str(p)}
-    if isinstance(p, float):
-        return {"type": "float", "value": p}
-    if isinstance(p, bytes):
-        return {"type": "blob", "base64": base64.b64encode(p).decode()}
+    if p is None: return {"type": "null"}
+    if isinstance(p, bool): return {"type": "integer", "value": "1" if p else "0"}
+    if isinstance(p, int): return {"type": "integer", "value": str(p)}
+    if isinstance(p, float): return {"type": "float", "value": p}
+    if isinstance(p, bytes): return {"type": "blob", "base64": base64.b64encode(p).decode()}
     return {"type": "text", "value": str(p)}
 
 
 def _decode_cell(cell):
-    """تحويل خلية Turso إلى قيمة Python"""
     if cell is None: return None
     t = cell.get("type")
     if t == "null": return None
     if t == "integer":
-        v = cell.get("value")
-        return int(v) if v is not None else None
+        v = cell.get("value"); return int(v) if v is not None else None
     if t == "float":
-        v = cell.get("value")
-        return float(v) if v is not None else None
-    if t == "text":
-        return cell.get("value")
-    if t == "blob":
-        return base64.b64decode(cell.get("base64", ""))
+        v = cell.get("value"); return float(v) if v is not None else None
+    if t == "text": return cell.get("value")
+    if t == "blob": return base64.b64decode(cell.get("base64", ""))
     return cell.get("value")
 
 
@@ -148,56 +135,39 @@ class WrappedCursor:
 
     def execute(self, sql, params=None):
         params = params or []
-        if not isinstance(params, (list, tuple)):
-            params = [params]
+        if not isinstance(params, (list, tuple)): params = [params]
         sql_str = sql.strip()
         sql_upper = sql_str.upper()
 
-        # PRAGMA: تجاهل (Turso ما بيرجعهاش)
         if sql_upper.startswith("PRAGMA"):
-            self._rows = []
-            self._columns = []
-            self._idx = 0
-            self.lastrowid = None
+            self._rows = []; self._columns = []; self._idx = 0; self.lastrowid = None
             return self
 
         args = [_encode_arg(p) for p in params]
-
-        payload = {
-            "requests": [
-                {"type": "execute", "stmt": {"sql": sql_str, "args": args, "want_rows": True}},
-                {"type": "close"}
-            ]
-        }
-        headers = {
-            "Authorization": f"Bearer {self._conn._token}",
-            "Content-Type": "application/json"
-        }
+        payload = {"requests": [
+            {"type": "execute", "stmt": {"sql": sql_str, "args": args, "want_rows": True}},
+            {"type": "close"}
+        ]}
 
         try:
-            r = requests.post(self._conn._url, json=payload, headers=headers, timeout=90)
+            r = self._conn._session.post(self._conn._url, json=payload, timeout=90)
         except Exception as e:
             raise Exception(f"فشل الاتصال بـ Turso: {e}")
 
         if not r.ok:
-            try:
-                err_data = r.json()
-            except Exception:
-                err_data = r.text[:300]
+            try: err_data = r.json()
+            except Exception: err_data = r.text[:300]
             raise Exception(f"Turso HTTP {r.status_code}: {err_data}")
 
-        try:
-            data = r.json()
-        except Exception:
-            raise Exception(f"رد غير صالح من Turso: {r.text[:300]}")
+        try: data = r.json()
+        except Exception: raise Exception(f"رد غير صالح من Turso")
 
         results = data.get("results", [])
-        if not results:
-            raise Exception("رد Turso فاضي")
+        if not results: raise Exception("رد Turso فاضي")
 
         first = results[0]
         if first.get("type") == "error":
-            em = first.get("error", {}).get("message", "خطأ غير معروف")
+            em = first.get("error", {}).get("message", "خطأ")
             raise Exception(f"Turso: {em}")
 
         resp = first.get("response", {}).get("result", {})
@@ -205,51 +175,29 @@ class WrappedCursor:
         self._columns = [c.get("name") for c in cols_info]
         self.description = [(c.get("name"),) for c in cols_info]
         raw_rows = resp.get("rows", [])
-
-        self._rows = []
-        for row in raw_rows:
-            self._rows.append(DictRow(self._columns, [_decode_cell(c) for c in row]))
+        self._rows = [DictRow(self._columns, [_decode_cell(c) for c in row]) for row in raw_rows]
         self._idx = 0
 
-        # آخر rowid بعد INSERT
-        if sql_upper.startswith("INSERT"):
-            try:
-                payload2 = {"requests": [
-                    {"type": "execute", "stmt": {"sql": "SELECT last_insert_rowid() AS lid", "args": [], "want_rows": True}},
-                    {"type": "close"}
-                ]}
-                r2 = requests.post(self._conn._url, json=payload2, headers=headers, timeout=30)
-                if r2.ok:
-                    d2 = r2.json()
-                    res2 = d2.get("results", [{}])[0].get("response", {}).get("result", {})
-                    rows2 = res2.get("rows", [])
-                    if rows2 and rows2[0]:
-                        self.lastrowid = _decode_cell(rows2[0][0])
-            except Exception:
-                self.lastrowid = None
+        # ✅ استخراج lastrowid من RETURNING id (لو موجود)
+        if sql_upper.startswith("INSERT") and "RETURNING" in sql_upper:
+            if self._rows and 'id' in self._rows[0].keys():
+                self.lastrowid = self._rows[0]['id']
         return self
 
     def executemany(self, sql, params_list):
-        for p in params_list:
-            self.execute(sql, p)
+        for p in params_list: self.execute(sql, p)
         return self
 
     def fetchone(self):
         if self._idx < len(self._rows):
-            r = self._rows[self._idx]
-            self._idx += 1
-            return r
+            r = self._rows[self._idx]; self._idx += 1; return r
         return None
 
     def fetchall(self):
-        rows = self._rows[self._idx:]
-        self._idx = len(self._rows)
-        return rows
+        rows = self._rows[self._idx:]; self._idx = len(self._rows); return rows
 
     def fetchmany(self, size=1):
-        rows = self._rows[self._idx:self._idx + size]
-        self._idx += len(rows)
-        return rows
+        rows = self._rows[self._idx:self._idx + size]; self._idx += len(rows); return rows
 
     def close(self): pass
     def __iter__(self): return iter(self._rows)
@@ -261,14 +209,22 @@ class WrappedConnection:
     def __init__(self, url, auth_token):
         self._url = url
         self._token = auth_token
+        # ✅ Connection Pooling
+        self._session = requests.Session()
+        self._session.headers.update({
+            "Authorization": f"Bearer {auth_token}",
+            "Content-Type": "application/json"
+        })
+        adapter = requests.adapters.HTTPAdapter(
+            pool_connections=10, pool_maxsize=20, max_retries=2
+        )
+        self._session.mount("https://", adapter)
+        self._session.mount("http://", adapter)
 
-    def cursor(self):
-        return WrappedCursor(self)
+    def cursor(self): return WrappedCursor(self)
 
     def execute(self, sql, params=None):
-        cur = WrappedCursor(self)
-        cur.execute(sql, params)
-        return cur
+        cur = WrappedCursor(self); cur.execute(sql, params); return cur
 
     def executescript(self, script):
         for stmt in script.split(';'):
@@ -277,30 +233,52 @@ class WrappedConnection:
                 try: self.execute(s)
                 except Exception: pass
 
+    def execute_batch(self, queries):
+        """✅ تنفيذ عدة SELECT في طلب HTTP واحد"""
+        stmts = []
+        for sql, params in queries:
+            args = [_encode_arg(p) for p in (params or [])]
+            stmts.append({"type": "execute", "stmt": {"sql": sql, "args": args, "want_rows": True}})
+        stmts.append({"type": "close"})
+        payload = {"requests": stmts}
+        try:
+            r = self._session.post(self._url, json=payload, timeout=120)
+        except Exception as e:
+            raise Exception(f"فشل الاتصال: {e}")
+        if not r.ok: raise Exception(f"Turso HTTP {r.status_code}")
+        data = r.json()
+        results = data.get("results", [])
+        output = []
+        for res in results[:-1]:
+            if res.get("type") == "error":
+                output.append([]); continue
+            resp = res.get("response", {}).get("result", {})
+            cols = [c.get("name") for c in resp.get("cols", [])]
+            rows = resp.get("rows", [])
+            output.append([DictRow(cols, [_decode_cell(c) for c in row]) for row in rows])
+        return output
+
     def commit(self): pass
     def rollback(self): pass
     def close(self): pass
 
 
 def get_conn():
-    """اتصال Turso محفوظ في session_state"""
     if 'db_conn' not in st.session_state or st.session_state.db_conn is None:
         st.session_state.db_conn = WrappedConnection(TURSO_PIPELINE, TURSO_TOKEN)
     return st.session_state.db_conn
 
 
 # =====================================================
-# Telegram (للمرفقات)
+# Telegram
 # =====================================================
 def is_telegram_file_id(s):
     if not s: return False
-    s = str(s)
-    return s.startswith(('AgAC', 'BQAC', 'BAAC', 'AgAD', 'BAAD', 'CAAC'))
+    return str(s).startswith(('AgAC', 'BQAC', 'BAAC', 'AgAD', 'BAAD', 'CAAC'))
 
 
 def upload_to_telegram(data_bytes, filename, caption="مرفق"):
-    if not TG_FILE_BOT_TOKEN or not TG_FILE_CHAT_ID:
-        return None
+    if not TG_FILE_BOT_TOKEN or not TG_FILE_CHAT_ID: return None
     try:
         url = f"https://api.telegram.org/bot{TG_FILE_BOT_TOKEN}/sendDocument"
         files = {'document': (filename, data_bytes)}
@@ -308,38 +286,31 @@ def upload_to_telegram(data_bytes, filename, caption="مرفق"):
         r = requests.post(url, files=files, data=d, timeout=300)
         if r.status_code == 200:
             return r.json().get('result', {}).get('document', {}).get('file_id')
-    except Exception:
-        pass
+    except Exception: pass
     return None
 
 
 def download_from_telegram(file_id):
-    if not TG_FILE_BOT_TOKEN or not file_id:
-        return None
+    if not TG_FILE_BOT_TOKEN or not file_id: return None
     try:
         info_url = f"https://api.telegram.org/bot{TG_FILE_BOT_TOKEN}/getFile?file_id={file_id}"
         resp = requests.get(info_url, timeout=60).json()
         if not resp.get('ok'): return None
-        file_path = resp['result']['file_path']
-        dl = f"https://api.telegram.org/file/bot{TG_FILE_BOT_TOKEN}/{file_path}"
+        fp = resp['result']['file_path']
+        dl = f"https://api.telegram.org/file/bot{TG_FILE_BOT_TOKEN}/{fp}"
         r = requests.get(dl, timeout=300)
-        if r.status_code == 200:
-            return r.content
-    except Exception:
-        pass
+        if r.status_code == 200: return r.content
+    except Exception: pass
     return None
 
 
 def save_uploaded_file(uploader_obj, caption="مرفق"):
-    if not uploader_obj:
-        return None
+    if not uploader_obj: return None
     try:
         data = uploader_obj.read()
-        if not data:
-            return None
+        if not data: return None
         return upload_to_telegram(data, uploader_obj.name, caption)
-    except Exception:
-        return None
+    except Exception: return None
 
 
 def render_attachment_download(att_value, key_prefix, label="📥 تحميل المرفق"):
@@ -352,8 +323,7 @@ def render_attachment_download(att_value, key_prefix, label="📥 تحميل ا�
                 if data:
                     st.download_button("اضغط هنا للحفظ", data=data, file_name=f"{key_prefix}_file",
                                        mime="application/octet-stream", key=f"{key_prefix}_save")
-                else:
-                    st.error("فشل تحميل المرفق")
+                else: st.error("فشل تحميل المرفق")
 
 
 # =====================================================
@@ -395,8 +365,7 @@ def display_dataframe_with_reorder(df, key_prefix):
     if selected:
         df_out = df[selected]
         st.session_state[f"{key_prefix}_order"] = selected
-    else:
-        df_out = df
+    else: df_out = df
     rtl_dataframe(df_out, key=f"{key_prefix}_rtl")
     return df_out, selected
 
@@ -417,16 +386,12 @@ def setup_arabic_font():
     fp = download_arabic_font()
     if fp and os.path.exists(fp):
         try:
-            pdfmetrics.registerFont(TTFont('Amiri', fp))
-            return 'Amiri'
+            pdfmetrics.registerFont(TTFont('Amiri', fp)); return 'Amiri'
         except: pass
     return 'Helvetica'
 
 
-def reshape_arabic_text(text):
-    return get_display(arabic_reshaper.reshape(str(text)))
-
-
+def reshape_arabic_text(text): return get_display(arabic_reshaper.reshape(str(text)))
 def parse_currency(v): return safe_float(v, 0.0)
 
 
@@ -440,12 +405,10 @@ def parse_date_safe(v, default=None):
 
 
 def parse_hijri_date(s):
-    if not s or str(s).strip() == "":
-        raise ValueError("تاريخ فارغ")
+    if not s or str(s).strip() == "": raise ValueError("تاريخ فارغ")
     s = str(s).strip().replace('/', '-').replace('.', '-')
     parts = s.split('-')
-    if len(parts) != 3:
-        raise ValueError(f"صيغة غير صحيحة: {s}")
+    if len(parts) != 3: raise ValueError(f"صيغة غير صحيحة: {s}")
     try: nums = [int(p) for p in parts]
     except: raise ValueError(f"يجب أن تكون أرقاماً: {s}")
     if nums[0] > 1300: y, m, d = nums
@@ -533,7 +496,6 @@ def export_df_to_pdf(df, title, file_name, columns_order=None, extra_info=None, 
         elif col in ['الحالة']: widths.append(65)
         elif col in ['رقم السند','رقم العقد']: widths.append(90)
         elif col in ['طريقة الدفع','طريقة السداد']: widths.append(85)
-        elif col in ['عدد الدفعات المستحقة','عدد الدفعات المتأخرة']: widths.append(90)
         else: widths.append(min(max(ml * 6 + 15, 65), 130))
     tw = sum(widths); mw = w - 40
     if tw > mw: sf = mw / tw; widths = [x * sf for x in widths]; tw = mw
@@ -670,8 +632,9 @@ def export_tax_pdf(df, title, file_name, columns_order=None, landscape_mode=True
 
 def print_receipt(receipt_id):
     conn = get_conn(); cur = conn.cursor()
-    cur.execute('''SELECT r.receipt_number, t.name, r.amount, r.receipt_date, r.payment_method, r.notes
-                   FROM receipts r JOIN tenants t ON r.tenant_id = t.id WHERE r.id = ?''', [receipt_id])
+    cur.execute('''SELECT r.receipt_number, COALESCE(t.name, 'مستأجر محذوف') as name,
+                   r.amount, r.receipt_date, r.payment_method, r.notes
+                   FROM receipts r LEFT JOIN tenants t ON r.tenant_id = t.id WHERE r.id = ?''', [receipt_id])
     r = cur.fetchone()
     if not r: return None
     buf = io.BytesIO(); c = canvas.Canvas(buf, pagesize=A4); w, h = A4
@@ -694,76 +657,46 @@ def print_receipt(receipt_id):
 # =====================================================
 def ensure_column(cur, table, col_name, col_type="TEXT", default=None):
     try:
-        # Turso: نستخدم ALTER TABLE IF NOT EXISTS غير مدعوم — نجرب ونعمل تخطي الخطأ
         dflt = f" DEFAULT {default}" if default is not None else ""
         cur.execute(f"ALTER TABLE {table} ADD COLUMN {col_name} {col_type}{dflt}")
-    except Exception:
-        pass  # العمود موجود
+    except Exception: pass
 
 
 @st.cache_resource
 def init_db():
     conn = get_conn(); cur = conn.cursor()
-
     cur.execute('CREATE TABLE IF NOT EXISTS settings (key TEXT PRIMARY KEY, value TEXT)')
-    cur.execute('''CREATE TABLE IF NOT EXISTS users (
-                   id INTEGER PRIMARY KEY AUTOINCREMENT,
-                   username TEXT UNIQUE NOT NULL,
-                   password_hash TEXT, role TEXT DEFAULT 'مشاهد',
-                   permissions TEXT DEFAULT '{}',
-                   created_at TEXT DEFAULT CURRENT_TIMESTAMP)''')
-    cur.execute('''CREATE TABLE IF NOT EXISTS tenants (
-                   id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT NOT NULL,
+    cur.execute('''CREATE TABLE IF NOT EXISTS users (id INTEGER PRIMARY KEY AUTOINCREMENT, username TEXT UNIQUE NOT NULL,
+                   password_hash TEXT, role TEXT DEFAULT 'مشاهد', permissions TEXT DEFAULT '{}', created_at TEXT DEFAULT CURRENT_TIMESTAMP)''')
+    cur.execute('''CREATE TABLE IF NOT EXISTS tenants (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT NOT NULL,
                    phone TEXT, national_id TEXT, address TEXT, region TEXT, notes TEXT)''')
-    cur.execute('''CREATE TABLE IF NOT EXISTS properties (
-                   id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT NOT NULL,
+    cur.execute('''CREATE TABLE IF NOT EXISTS properties (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT NOT NULL,
                    description TEXT, address TEXT, region TEXT, area TEXT)''')
-    cur.execute('''CREATE TABLE IF NOT EXISTS contracts (
-                   id INTEGER PRIMARY KEY AUTOINCREMENT, tenant_id INTEGER, property_id INTEGER,
-                   contract_number TEXT UNIQUE, start_date TEXT, end_date TEXT,
-                   rent_amount REAL, interval_months INTEGER DEFAULT 1,
-                   deposit_amount REAL, notes TEXT, status TEXT DEFAULT 'نشط',
-                   tax_included INTEGER DEFAULT 0, tax_rate REAL DEFAULT 0.15,
-                   contract_file TEXT, calendar_type TEXT DEFAULT 'ميلادي',
-                   hijri_start_date TEXT, hijri_end_date TEXT)''')
-    cur.execute('''CREATE TABLE IF NOT EXISTS payments (
-                   id INTEGER PRIMARY KEY AUTOINCREMENT, contract_id INTEGER, tenant_id INTEGER,
-                   due_date TEXT, amount REAL, paid_amount REAL DEFAULT 0,
-                   paid_date TEXT, status TEXT DEFAULT 'مستحق', notes TEXT,
-                   attachment TEXT, is_temporary INTEGER DEFAULT 0,
-                   temporary_note TEXT, is_advance INTEGER DEFAULT 0)''')
-    cur.execute('''CREATE TABLE IF NOT EXISTS receipts (
-                   id INTEGER PRIMARY KEY AUTOINCREMENT, receipt_number TEXT,
-                   tenant_id INTEGER, contract_id INTEGER, payment_id INTEGER,
-                   amount REAL, receipt_date TEXT, payment_method TEXT,
-                   notes TEXT, attachment TEXT)''')
-    cur.execute('''CREATE TABLE IF NOT EXISTS alerts (
-                   id INTEGER PRIMARY KEY AUTOINCREMENT, tenant_id INTEGER,
-                   alert_text TEXT, alert_date TEXT, is_read INTEGER DEFAULT 0)''')
-    cur.execute('''CREATE TABLE IF NOT EXISTS contract_pricing_tiers (
-                   id INTEGER PRIMARY KEY AUTOINCREMENT, contract_id INTEGER,
+    cur.execute('''CREATE TABLE IF NOT EXISTS contracts (id INTEGER PRIMARY KEY AUTOINCREMENT, tenant_id INTEGER, property_id INTEGER,
+                   contract_number TEXT UNIQUE, start_date TEXT, end_date TEXT, rent_amount REAL, interval_months INTEGER DEFAULT 1,
+                   deposit_amount REAL, notes TEXT, status TEXT DEFAULT 'نشط', tax_included INTEGER DEFAULT 0, tax_rate REAL DEFAULT 0.15,
+                   contract_file TEXT, calendar_type TEXT DEFAULT 'ميلادي', hijri_start_date TEXT, hijri_end_date TEXT)''')
+    cur.execute('''CREATE TABLE IF NOT EXISTS payments (id INTEGER PRIMARY KEY AUTOINCREMENT, contract_id INTEGER, tenant_id INTEGER,
+                   due_date TEXT, amount REAL, paid_amount REAL DEFAULT 0, paid_date TEXT, status TEXT DEFAULT 'مستحق', notes TEXT,
+                   attachment TEXT, is_temporary INTEGER DEFAULT 0, temporary_note TEXT, is_advance INTEGER DEFAULT 0)''')
+    cur.execute('''CREATE TABLE IF NOT EXISTS receipts (id INTEGER PRIMARY KEY AUTOINCREMENT, receipt_number TEXT, tenant_id INTEGER,
+                   contract_id INTEGER, payment_id INTEGER, amount REAL, receipt_date TEXT, payment_method TEXT, notes TEXT, attachment TEXT)''')
+    cur.execute('''CREATE TABLE IF NOT EXISTS alerts (id INTEGER PRIMARY KEY AUTOINCREMENT, tenant_id INTEGER, alert_text TEXT,
+                   alert_date TEXT, is_read INTEGER DEFAULT 0)''')
+    cur.execute('''CREATE TABLE IF NOT EXISTS contract_pricing_tiers (id INTEGER PRIMARY KEY AUTOINCREMENT, contract_id INTEGER,
                    start_date TEXT, end_date TEXT, annual_rent REAL, notes TEXT)''')
-    cur.execute('''CREATE TABLE IF NOT EXISTS additional_fees (
-                   id INTEGER PRIMARY KEY AUTOINCREMENT, contract_id INTEGER,
-                   fee_name TEXT, amount REAL, frequency TEXT DEFAULT 'مرة واحدة',
-                   tax_included INTEGER DEFAULT 0, notes TEXT,
+    cur.execute('''CREATE TABLE IF NOT EXISTS additional_fees (id INTEGER PRIMARY KEY AUTOINCREMENT, contract_id INTEGER,
+                   fee_name TEXT, amount REAL, frequency TEXT DEFAULT 'مرة واحدة', tax_included INTEGER DEFAULT 0, notes TEXT,
                    created_at TEXT DEFAULT CURRENT_TIMESTAMP)''')
-    cur.execute('''CREATE TABLE IF NOT EXISTS contract_discounts (
-                   id INTEGER PRIMARY KEY AUTOINCREMENT, contract_id INTEGER,
-                   discount_type TEXT DEFAULT 'نسبة', discount_value REAL,
-                   start_date TEXT, end_date TEXT, reason TEXT,
+    cur.execute('''CREATE TABLE IF NOT EXISTS contract_discounts (id INTEGER PRIMARY KEY AUTOINCREMENT, contract_id INTEGER,
+                   discount_type TEXT DEFAULT 'نسبة', discount_value REAL, start_date TEXT, end_date TEXT, reason TEXT,
                    created_at TEXT DEFAULT CURRENT_TIMESTAMP)''')
-
-    # Migrations
-    for col, typ, dflt in [('is_advance','INTEGER','0'),('is_temporary','INTEGER','0'),
-                            ('temporary_note','TEXT',None),('attachment','TEXT',None)]:
+    for col, typ, dflt in [('is_advance','INTEGER','0'),('is_temporary','INTEGER','0'),('temporary_note','TEXT',None),('attachment','TEXT',None)]:
         ensure_column(cur, 'payments', col, typ, dflt)
-    for col, typ, dflt in [('calendar_type','TEXT',"'ميلادي'"),('hijri_start_date','TEXT',None),
-                            ('hijri_end_date','TEXT',None),('contract_file','TEXT',None)]:
+    for col, typ, dflt in [('calendar_type','TEXT',"'ميلادي'"),('hijri_start_date','TEXT',None),('hijri_end_date','TEXT',None),('contract_file','TEXT',None)]:
         ensure_column(cur, 'contracts', col, typ, dflt)
     ensure_column(cur, 'receipts', 'attachment', 'TEXT', None)
     ensure_column(cur, 'users', 'permissions', 'TEXT', "'{}'")
-
     cur.execute("SELECT COUNT(*) as c FROM users")
     r = cur.fetchone()
     if r and r['c'] == 0:
@@ -776,9 +709,6 @@ init_db()
 PAGE_KEYS = ["لوحة التحكم","إدارة البيانات","الدفعات","سندات القبض","التقارير","عقود منتهية","المستخدمون","الإعدادات","نسخ احتياطي"]
 
 
-# =====================================================
-# Permissions & settings
-# =====================================================
 def get_default_permissions(role):
     if role == 'مدير': return {p: True for p in PAGE_KEYS}
     if role == 'محاسب':
@@ -1110,18 +1040,20 @@ def get_tenant_contracts_history(tid):
 
 
 def get_total_dues_until(target_date, only_overdue=False):
-    conn = get_conn(); cur = conn.cursor()
-    if only_overdue:
-        cur.execute("SELECT COALESCE(SUM(amount - paid_amount), 0) as t FROM payments WHERE due_date <= ? AND (amount - paid_amount) > 0", [target_date.isoformat()])
-    else:
-        cur.execute("SELECT COALESCE(SUM(amount - paid_amount), 0) as t FROM payments WHERE due_date <= ?", [target_date.isoformat()])
-    r = cur.fetchone(); total = r['t'] if r else 0
-    cur.execute("SELECT COALESCE(SUM(amount - paid_amount), 0) as t FROM payments WHERE (amount - paid_amount) > 0")
-    r = cur.fetchone(); total_all = r['t'] if r else 0
-    cur.execute("SELECT COUNT(*) as c FROM payments WHERE (amount - paid_amount) > 0")
-    r = cur.fetchone(); cnt_due = r['c'] if r else 0
-    cur.execute("SELECT COUNT(*) as c FROM payments WHERE due_date < ? AND (amount - paid_amount) > 0", [target_date.isoformat()])
-    r = cur.fetchone(); cnt_over = r['c'] if r else 0
+    # ✅ Batch: 4 استعلامات في طلب واحد
+    conn = get_conn()
+    q1 = "SELECT COALESCE(SUM(amount - paid_amount), 0) as t FROM payments WHERE due_date <= ?" + (" AND (amount - paid_amount) > 0" if only_overdue else "")
+    q2 = "SELECT COALESCE(SUM(amount - paid_amount), 0) as t FROM payments WHERE (amount - paid_amount) > 0"
+    q3 = "SELECT COUNT(*) as c FROM payments WHERE (amount - paid_amount) > 0"
+    q4 = "SELECT COUNT(*) as c FROM payments WHERE due_date < ? AND (amount - paid_amount) > 0"
+    res = conn.execute_batch([
+        (q1, [target_date.isoformat()]),
+        (q2, []), (q3, []), (q4, [target_date.isoformat()])
+    ])
+    total = res[0][0]['t'] if res[0] else 0
+    total_all = res[1][0]['t'] if res[1] else 0
+    cnt_due = res[2][0]['c'] if res[2] else 0
+    cnt_over = res[3][0]['c'] if res[3] else 0
     return total, total_all, cnt_due, cnt_over
 
 
@@ -1155,15 +1087,14 @@ def load_properties():
 @st.cache_data(ttl=60)
 def load_contracts():
     conn = get_conn(); cur = conn.cursor()
-    q = """SELECT c.id as 'الرقم', c.contract_number as 'رقم العقد',
+    cur.execute("""SELECT c.id as 'الرقم', c.contract_number as 'رقم العقد',
            c.start_date as 'تاريخ البداية', c.end_date as 'تاريخ النهاية',
            c.rent_amount as 'قيمة الإيجار السنوي', c.interval_months as 'دورية السداد (شهور)',
            c.deposit_amount as 'التأمين', c.status as 'الحالة',
            c.tax_included as 'شامل الضريبة', c.tax_rate as 'نسبة الضريبة',
            COALESCE(c.calendar_type, 'ميلادي') as 'التقويم',
            t.name as 'اسم المستأجر', p.name as 'اسم العقار'
-           FROM contracts c JOIN tenants t ON c.tenant_id = t.id JOIN properties p ON c.property_id = p.id"""
-    cur.execute(q)
+           FROM contracts c JOIN tenants t ON c.tenant_id = t.id JOIN properties p ON c.property_id = p.id""")
     rows = cur.fetchall()
     if not rows: return pd.DataFrame()
     cols = list(rows[0].keys())
@@ -1191,10 +1122,12 @@ def load_payments(sf='الكل'):
 @st.cache_data(ttl=60)
 def load_receipts():
     conn = get_conn(); cur = conn.cursor()
-    cur.execute('''SELECT r.id as 'الرقم', r.receipt_number as 'رقم السند', t.name as 'المستأجر',
+    # ✅ LEFT JOIN للتعامل مع مستأجرين محذوفين
+    cur.execute('''SELECT r.id as 'الرقم', r.receipt_number as 'رقم السند',
+        COALESCE(t.name, 'مستأجر محذوف') as 'المستأجر',
         r.amount as 'المبلغ', r.receipt_date as 'التاريخ', r.payment_method as 'طريقة الدفع',
-        r.notes as 'ملاحظات', t.region as 'المنطقة', r.tenant_id as 'معرف_المستأجر'
-        FROM receipts r JOIN tenants t ON r.tenant_id = t.id
+        r.notes as 'ملاحظات', COALESCE(t.region, '-') as 'المنطقة', r.tenant_id as 'معرف_المستأجر'
+        FROM receipts r LEFT JOIN tenants t ON r.tenant_id = t.id
         ORDER BY r.receipt_date DESC''')
     rows = cur.fetchall()
     if not rows: return pd.DataFrame()
@@ -1216,8 +1149,7 @@ def import_tenants_from_excel(f):
             n = str(row.get("الاسم", "")).strip()
             if not n or n in ex: continue
             cur.execute('INSERT INTO tenants (name, phone, national_id, address, region, notes) VALUES (?,?,?,?,?,?)',
-                        [n,
-                         str(row.get("الهاتف","")).strip() if "الهاتف" in df.columns else "",
+                        [n, str(row.get("الهاتف","")).strip() if "الهاتف" in df.columns else "",
                          str(row.get("رقم الهوية / الإقامة","")).strip() if "رقم الهوية / الإقامة" in df.columns else "",
                          str(row.get("العنوان","")).strip() if "العنوان" in df.columns else "",
                          str(row.get("المنطقة","")).strip() if "المنطقة" in df.columns else "",
@@ -1238,8 +1170,7 @@ def import_properties_from_excel(f):
             n = str(row["الاسم"]).strip()
             if not n or n in ex: continue
             cur.execute('INSERT INTO properties (name, description, address, region, area) VALUES (?,?,?,?,?)',
-                        [n,
-                         str(row.get("الوصف","")).strip() if "الوصف" in df.columns else "",
+                        [n, str(row.get("الوصف","")).strip() if "الوصف" in df.columns else "",
                          str(row.get("العنوان","")).strip() if "العنوان" in df.columns else "",
                          str(row.get("المنطقة","")).strip() if "المنطقة" in df.columns else "",
                          str(row.get("المساحة","")).strip() if "المساحة" in df.columns else ""])
@@ -1337,7 +1268,7 @@ def import_contracts_from_excel(f):
                 nt = clean_text_value(row.get("ملاحظات", ""))
                 cur.execute('''INSERT INTO contracts (tenant_id, property_id, contract_number, start_date, end_date,
                     rent_amount, interval_months, deposit_amount, notes, tax_included, tax_rate, calendar_type)
-                    VALUES (?,?,?,?,?,?,?,?,?,?,?,?)''',
+                    VALUES (?,?,?,?,?,?,?,?,?,?,?,?) RETURNING id''',
                     [tid, pid, cnum, sd.isoformat(), ed.isoformat(), ra, im, da, nt, ti, tr, 'ميلادي'])
                 cid = cur.lastrowid
                 step = relativedelta(months=im); curd = sd
@@ -1360,7 +1291,7 @@ def import_contracts_from_excel(f):
 
 
 # =====================================================
-# CRUD
+# CRUD (باستخدام RETURNING id)
 # =====================================================
 def add_user(u, p, r):
     conn = get_conn(); cur = conn.cursor()
@@ -1426,10 +1357,11 @@ def add_contract_full(tid, pid, cn, sd, ed, ra, im, da, ti, tr, nt, fb_file_id, 
     if cur.fetchone()['c'] > 0: return False, "⚠️ يوجد عقد نشط متداخل مع هذه الفترة", None
     hs = gregorian_to_hijri(sd) if calendar_type == 'هجري' else None
     he = gregorian_to_hijri(ed) if calendar_type == 'هجري' else None
+    # ✅ RETURNING id
     cur.execute('''INSERT INTO contracts (tenant_id, property_id, contract_number, start_date, end_date,
         rent_amount, interval_months, deposit_amount, notes, tax_included, tax_rate, contract_file,
         calendar_type, hijri_start_date, hijri_end_date)
-        VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)''',
+        VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?) RETURNING id''',
         [tid, pid, cn, sd.isoformat(), ed.isoformat(), ra, im, da, nt, ti, tr, fb_file_id, calendar_type, hs, he])
     cid = cur.lastrowid
     if previous_balance and previous_balance > 0:
@@ -1537,28 +1469,22 @@ def delete_receipt(rid):
 
 
 # =====================================================
-# Backup/Restore (JSON + gzip)
+# Backup
 # =====================================================
-BACKUP_TABLES = ['settings','users','tenants','properties','contracts',
-                 'payments','receipts','alerts','contract_pricing_tiers',
-                 'additional_fees','contract_discounts']
+BACKUP_TABLES = ['settings','users','tenants','properties','contracts','payments','receipts',
+                 'alerts','contract_pricing_tiers','additional_fees','contract_discounts']
 
 
 def create_compressed_backup():
     try:
-        conn = get_conn(); cur = conn.cursor()
-        data = {}
-        for t in BACKUP_TABLES:
-            try:
-                cur.execute(f"SELECT * FROM {t}")
-                data[t] = [r.to_dict() for r in cur.fetchall()]
-            except Exception:
-                data[t] = []
+        conn = get_conn()
+        queries = [(f"SELECT * FROM {t}", []) for t in BACKUP_TABLES]
+        results = conn.execute_batch(queries)
+        data = {t: [r.to_dict() for r in results[i]] for i, t in enumerate(BACKUP_TABLES)}
         json_bytes = json.dumps(data, ensure_ascii=False, default=str).encode('utf-8')
         compressed = gzip.compress(json_bytes, compresslevel=9)
         return compressed, len(json_bytes), len(compressed)
-    except Exception:
-        return None, 0, 0
+    except Exception: return None, 0, 0
 
 
 def restore_from_compressed(compressed_data):
@@ -1588,15 +1514,15 @@ def download_file_from_telegram_backup(file_id):
     info_url = f"https://api.telegram.org/bot{TG_FILE_BOT_TOKEN}/getFile?file_id={file_id}"
     resp = requests.get(info_url, timeout=60).json()
     if not resp.get('ok'): raise Exception(f"فشل: {resp}")
-    file_path = resp['result']['file_path']
-    dl = f"https://api.telegram.org/file/bot{TG_FILE_BOT_TOKEN}/{file_path}"
+    fp = resp['result']['file_path']
+    dl = f"https://api.telegram.org/file/bot{TG_FILE_BOT_TOKEN}/{fp}"
     r = requests.get(dl, timeout=300)
     if r.status_code != 200: raise Exception(f"فشل التحميل: {r.status_code}")
     return r.content
 
 
 # =====================================================
-# UI Pages (نفس السابق)
+# الصفحات
 # =====================================================
 if menu == "لوحة التحكم" and has_permission(current_user_id, "لوحة التحكم"):
     st.subheader("📊 لوحة التحكم")
@@ -1630,8 +1556,7 @@ if menu == "لوحة التحكم" and has_permission(current_user_id, "لوحة
                 st.markdown(f"""
                 {b} **{e['tenant_name']}** — `{e['contract_number']}`  
                 📞 {e['tenant_phone'] or '-'} | 🏢 {e['prop_name']} | 📍 {e['tenant_region'] or '-'}  
-                📅 ينتهي: **{e['end_date']} م** ({hej} هـ) — متبقي **{dl}** يوم  
-                💰 الإيجار: {format_currency(e['rent_amount'])} | الدورية: كل {e['interval_months']} شهر
+                📅 ينتهي: **{e['end_date']} م** ({hej} هـ) — متبقي **{dl}** يوم
                 """)
                 st.markdown("---")
     else: st.info("لا توجد عقود تنتهي خلال 60 يوم")
@@ -1916,7 +1841,7 @@ elif menu == "إدارة البيانات":
                             if ci['hijri_start_date'] and ci['hijri_end_date']:
                                 st.write(f"**هجري:** {ci['hijri_start_date']} → {ci['hijri_end_date']}")
                             st.write(f"**الإيجار:** {format_currency(ci['rent_amount'])} | **الدورية:** كل {ci['interval_months']} شهر")
-                            st.write(f"**التأمين:** {format_currency(ci['deposit_amount'])} | **شامل الضريبة:** {'نعم' if ci['tax_included'] else 'لا'}")
+                            st.write(f"**التأمين:** {format_currency(ci['deposit_amount'])}")
                             st.write(f"**ملاحظات:** {ci['notes'] or '-'}")
                             if ci['contract_file']:
                                 render_attachment_download(ci['contract_file'], f"cf_{cid}", "📥 ملف العقد")
@@ -1991,18 +1916,22 @@ elif menu == "سندات القبض":
                     today = date.today()
                     show_adv = st.checkbox("🔮 عرض الدفعات المستقبلية (مقدمة)", value=False, key="show_advance_chk")
                     st.markdown("### 💵 ملخص المديونية")
-                    conn = get_conn(); cur = conn.cursor()
-                    cur.execute("SELECT COALESCE(SUM(amount - paid_amount), 0) as t FROM payments WHERE tenant_id=? AND (amount - paid_amount) > 0", [tid])
-                    td_ = cur.fetchone()['t']
-                    cur.execute("SELECT COALESCE(SUM(amount - paid_amount), 0) as t FROM payments WHERE tenant_id=? AND (amount - paid_amount) > 0 AND due_date < ?", [tid, today.isoformat()])
-                    od_ = cur.fetchone()['t']
-                    cur.execute("SELECT COALESCE(SUM(amount - paid_amount), 0) as t FROM payments WHERE tenant_id=? AND (amount - paid_amount) > 0 AND due_date > ?", [tid, today.isoformat()])
-                    fd_ = cur.fetchone()['t']
+                    conn = get_conn()
+                    # ✅ Batch: 3 استعلامات في طلب واحد
+                    res = conn.execute_batch([
+                        ("SELECT COALESCE(SUM(amount - paid_amount), 0) as t FROM payments WHERE tenant_id=? AND (amount - paid_amount) > 0", [tid]),
+                        ("SELECT COALESCE(SUM(amount - paid_amount), 0) as t FROM payments WHERE tenant_id=? AND (amount - paid_amount) > 0 AND due_date < ?", [tid, today.isoformat()]),
+                        ("SELECT COALESCE(SUM(amount - paid_amount), 0) as t FROM payments WHERE tenant_id=? AND (amount - paid_amount) > 0 AND due_date > ?", [tid, today.isoformat()])
+                    ])
+                    td_ = res[0][0]['t'] if res[0] else 0
+                    od_ = res[1][0]['t'] if res[1] else 0
+                    fd_ = res[2][0]['t'] if res[2] else 0
                     m1, m2, m3 = st.columns(3)
                     m1.metric("إجمالي المديونية", format_currency(td_))
                     m2.metric("⚠️ متأخر", format_currency(od_))
                     m3.metric("🔮 مستقبلي", format_currency(fd_))
                     st.markdown("---")
+                    cur = conn.cursor()
                     if show_adv:
                         cur.execute('''SELECT id, due_date, amount, paid_amount, (amount - paid_amount) as remaining, contract_id
                             FROM payments WHERE tenant_id=? AND status != 'مدفوع' AND (amount - paid_amount) > 0 ORDER BY due_date''', [tid])
@@ -2218,32 +2147,30 @@ elif menu == "التقارير":
                         else: td = st.date_input("إلى", value=date.today(), key="kr_d2")
                     if cc == "هجري": st.info(f"📆 الفترة (م): من **{fd}** إلى **{td}**")
                     inc_past = st.checkbox("☑️ تضمين المتأخرات قبل الفترة", value=False, key=f"kashf_past_{tid}")
-                    conn = get_conn(); cur = conn.cursor()
-                    cur.execute("SELECT name, region FROM tenants WHERE id=?", [tid])
-                    tn_row = cur.fetchone()
+                    # ✅ Batch: 5 استعلامات في طلب واحد
+                    conn = get_conn()
+                    pay_q = '''SELECT pay.id, pay.due_date, pay.amount, pay.paid_amount, (pay.amount-pay.paid_amount) as rem,
+                               pay.status, pay.paid_date, pay.attachment, c.contract_number
+                               FROM payments pay JOIN contracts c ON pay.contract_id = c.id
+                               WHERE pay.tenant_id=? AND ''' + ("pay.due_date <= ?" if inc_past else "pay.due_date BETWEEN ? AND ?") + " ORDER BY pay.due_date"
+                    pay_params = [tid, td.isoformat()] if inc_past else [tid, fd.isoformat(), td.isoformat()]
+                    res = conn.execute_batch([
+                        ("SELECT name, region FROM tenants WHERE id=?", [tid]),
+                        ("SELECT c.contract_number FROM contracts c WHERE c.tenant_id=? AND c.status='نشط' LIMIT 1", [tid]),
+                        ("SELECT contract_number, start_date, end_date, status FROM contracts WHERE tenant_id=? ORDER BY start_date DESC", [tid]),
+                        ('''SELECT receipt_number, amount, receipt_date, payment_method, attachment
+                            FROM receipts WHERE tenant_id=? AND receipt_date BETWEEN ? AND ? ORDER BY receipt_date''',
+                         [tid, fd.isoformat(), td.isoformat()]),
+                        (pay_q, pay_params)
+                    ])
+                    tn_row = res[0][0] if res[0] else None
+                    cr = res[1][0] if res[1] else None
+                    all_c = res[2]
+                    recs = res[3]
+                    pays = res[4]
                     if tn_row:
                         tn = tn_row['name']; tr = tn_row['region']
-                        cur.execute("SELECT c.contract_number FROM contracts c WHERE c.tenant_id=? AND c.status='نشط' LIMIT 1", [tid])
-                        cr = cur.fetchone()
                         cno = cr['contract_number'] if cr else "لا يوجد"
-                        cur.execute("SELECT contract_number, start_date, end_date, status FROM contracts WHERE tenant_id=? ORDER BY start_date DESC", [tid])
-                        all_c = cur.fetchall()
-                        cur.execute('''SELECT receipt_number, amount, receipt_date, payment_method, attachment
-                            FROM receipts WHERE tenant_id=? AND receipt_date BETWEEN ? AND ? ORDER BY receipt_date''',
-                                    [tid, fd.isoformat(), td.isoformat()])
-                        recs = cur.fetchall()
-                        if inc_past:
-                            cur.execute('''SELECT pay.id, pay.due_date, pay.amount, pay.paid_amount, (pay.amount-pay.paid_amount) as rem,
-                                pay.status, pay.paid_date, pay.attachment, c.contract_number
-                                FROM payments pay JOIN contracts c ON pay.contract_id = c.id
-                                WHERE pay.tenant_id=? AND pay.due_date <= ? ORDER BY pay.due_date''', [tid, td.isoformat()])
-                        else:
-                            cur.execute('''SELECT pay.id, pay.due_date, pay.amount, pay.paid_amount, (pay.amount-pay.paid_amount) as rem,
-                                pay.status, pay.paid_date, pay.attachment, c.contract_number
-                                FROM payments pay JOIN contracts c ON pay.contract_id = c.id
-                                WHERE pay.tenant_id=? AND pay.due_date BETWEEN ? AND ? ORDER BY pay.due_date''',
-                                        [tid, fd.isoformat(), td.isoformat()])
-                        pays = cur.fetchall()
                         st.markdown(f"### كشف حساب: {tn}")
                         st.write(f"**المنطقة:** {tr or '-'} | **العقد الحالي:** {cno} | **الفترة:** {fd} - {td}")
                         if all_c:
@@ -2498,7 +2425,9 @@ elif menu == "الإعدادات":
             if st.form_submit_button("حفظ"):
                 save_setting('company_name', cn); save_setting('primary_color', pc)
                 save_setting('secondary_color', sc); save_setting('background_color', bc); save_setting('font_size', fs)
-                if lf: save_setting('logo', lf.read())
+                if lf:
+                    fid = save_uploaded_file(lf, "logo")
+                    if fid: save_setting('logo_file_id', fid)
                 st.toast("تم الحفظ", icon="✅"); st.rerun()
         st.info(f"📱 تيليجرام: {'✅' if TG_FILE_BOT_TOKEN else '❌'}")
         st.info(f"🗄️ Turso: {'✅ متصل' if TURSO_URL else '❌'}")
@@ -2529,8 +2458,7 @@ elif menu == "نسخ احتياطي":
                 file_bytes = uf.read()
                 if st.button("🔄 استعادة", key="btn_restore_gz"):
                     try:
-                        if file_bytes[:2] == b'\x1f\x8b':
-                            restore_from_compressed(file_bytes)
+                        if file_bytes[:2] == b'\x1f\x8b': restore_from_compressed(file_bytes)
                         else:
                             data = json.loads(file_bytes.decode('utf-8'))
                             json_bytes = json.dumps(data, ensure_ascii=False, default=str).encode('utf-8')
