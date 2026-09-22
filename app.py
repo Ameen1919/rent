@@ -24,12 +24,8 @@ import traceback
 
 st.set_page_config(page_title="نظام إدارة الإيجارات", page_icon="🏢", layout="wide")
 
-# ============================================================
-# RTL + Wafeq-like Sidebar Styling
-# ============================================================
 st.markdown("""
 <style>
-    /* ===== RTL الأساسي ===== */
     html, body, [class*="css"] { direction: rtl !important; text-align: right !important; }
     .stApp { direction: rtl !important; }
     .stButton, .stSelectbox, .stTextInput, .stNumberInput, .stDateInput, .stRadio, .stCheckbox {
@@ -45,91 +41,42 @@ st.markdown("""
     [data-testid="stDataFrame"] { direction: ltr !important; }
     [data-testid="stDataFrame"] [role="columnheader"] { text-align: center !important; }
 
-    /* ===== Sidebar زي Wafeq ===== */
-    [data-testid="stSidebar"] {
-        direction: rtl !important;
-        text-align: right !important;
-    }
-    
-    /* زر القفل — نقله لليمين + شكل RTL */
+    /* Sidebar زي Wafeq */
+    [data-testid="stSidebar"] { direction: rtl !important; text-align: right !important; }
     [data-testid="stSidebarCollapseButton"],
     button[data-testid="baseButton-headerNoPadding"] {
-        position: absolute !important;
-        right: 12px !important;
-        left: auto !important;
-        top: 12px !important;
-        z-index: 999 !important;
+        position: absolute !important; right: 12px !important; left: auto !important;
+        top: 12px !important; z-index: 999 !important;
     }
-    
-    /* عكس اتجاه السهم */
     [data-testid="stSidebarCollapseButton"] svg,
-    button[data-testid="baseButton-headerNoPadding"] svg {
-        transform: scaleX(-1) !important;
-    }
-    
-    /* الزر أوضح لما الشريط مفتوح */
+    button[data-testid="baseButton-headerNoPadding"] svg { transform: scaleX(-1) !important; }
     [data-testid="stSidebar"][aria-expanded="true"] [data-testid="stSidebarCollapseButton"] {
         background-color: rgba(255, 255, 255, 0.2) !important;
-        border-radius: 8px !important;
-        padding: 4px !important;
+        border-radius: 8px !important; padding: 4px !important;
         transition: background-color 0.2s ease !important;
     }
-    
-    /* الزر لما الشريط مقفول */
     section[data-testid="stSidebar"][aria-expanded="false"] + section [data-testid="stSidebarCollapseButton"],
     [data-testid="collapsedControl"] {
-        position: fixed !important;
-        top: 12px !important;
-        right: 12px !important;
-        left: auto !important;
-        background-color: #4A90E2 !important;
-        border-radius: 8px !important;
-        padding: 8px 12px !important;
-        box-shadow: 0 2px 8px rgba(0,0,0,0.15) !important;
-        z-index: 9999 !important;
+        position: fixed !important; top: 12px !important; right: 12px !important;
+        left: auto !important; background-color: #4A90E2 !important;
+        border-radius: 8px !important; padding: 8px 12px !important;
+        box-shadow: 0 2px 8px rgba(0,0,0,0.15) !important; z-index: 9999 !important;
         transition: all 0.2s ease !important;
     }
-    
-    [data-testid="collapsedControl"] svg {
-        transform: scaleX(-1) !important;
-        color: white !important;
-    }
-    
-    [data-testid="collapsedControl"]:hover {
-        background-color: #357ABD !important;
-        transform: scale(1.05) !important;
-    }
-    
-    [data-testid="stSidebar"] > div:first-child {
-        padding-top: 10px !important;
-    }
-    
-    [data-testid="stSidebar"] [data-testid="stVerticalBlock"] > div:first-child {
-        padding-top: 30px !important;
-    }
-    
-    /* عناصر القائمة */
+    [data-testid="collapsedControl"] svg { transform: scaleX(-1) !important; color: white !important; }
+    [data-testid="collapsedControl"]:hover { background-color: #357ABD !important; transform: scale(1.05) !important; }
+    [data-testid="stSidebar"] > div:first-child { padding-top: 10px !important; }
+    [data-testid="stSidebar"] [data-testid="stVerticalBlock"] > div:first-child { padding-top: 30px !important; }
     [data-testid="stSidebar"] .stRadio > label {
-        padding: 8px 12px !important;
-        border-radius: 6px !important;
+        padding: 8px 12px !important; border-radius: 6px !important;
         transition: background-color 0.2s ease !important;
-        display: block !important;
-        margin-bottom: 4px !important;
+        display: block !important; margin-bottom: 4px !important;
     }
-    
-    [data-testid="stSidebar"] .stRadio > label:hover {
-        background-color: rgba(255, 255, 255, 0.15) !important;
-    }
-    
+    [data-testid="stSidebar"] .stRadio > label:hover { background-color: rgba(255, 255, 255, 0.15) !important; }
     [data-testid="stSidebar"] .stRadio > label:has(input:checked) {
-        background-color: rgba(255, 255, 255, 0.25) !important;
-        font-weight: bold !important;
+        background-color: rgba(255, 255, 255, 0.25) !important; font-weight: bold !important;
     }
-    
-    [data-testid="stSidebar"] .stRadio label p {
-        display: inline !important;
-        margin: 0 !important;
-    }
+    [data-testid="stSidebar"] .stRadio label p { display: inline !important; margin: 0 !important; }
 </style>
 """, unsafe_allow_html=True)
 
@@ -168,7 +115,7 @@ TURSO_PIPELINE = f"{TURSO_URL_CLEAN}/v2/pipeline"
 
 
 # ============================================================
-# Turso HTTP Client
+# Turso HTTP Client with Retry
 # ============================================================
 class DictRow:
     def __init__(self, columns, values):
@@ -241,10 +188,8 @@ class WrappedCursor:
             {"type": "close"}
         ]}
 
-        try:
-            r = self._conn._session.post(self._conn._url, json=payload, timeout=90)
-        except Exception as e:
-            raise Exception(f"فشل الاتصال بـ Turso: {e}")
+        # ✅ استخدام _safe_post مع retry
+        r = self._conn._safe_post(payload, timeout=120)
 
         if not r.ok:
             try: err_data = r.json()
@@ -252,7 +197,7 @@ class WrappedCursor:
             raise Exception(f"Turso HTTP {r.status_code}: {err_data}")
 
         try: data = r.json()
-        except Exception: raise Exception(f"رد غير صالح من Turso")
+        except Exception: raise Exception("رد غير صالح من Turso")
 
         results = data.get("results", [])
         if not results: raise Exception("رد Turso فاضي")
@@ -297,7 +242,6 @@ class WrappedCursor:
 
 
 class WrappedConnection:
-    class WrappedConnection:
     def __init__(self, url, auth_token):
         self._url = url
         self._token = auth_token
@@ -335,10 +279,9 @@ class WrappedConnection:
                     ConnectionResetError) as e:
                 last_err = e
                 if attempt < max_retries - 1:
-                    # جرب تعيد إنشاء الـ session (الاتصال ممكن يكون stale)
                     try: self._create_session()
                     except: pass
-                    time.sleep(1.5 * (attempt + 1))  # 1.5s, 3s
+                    time.sleep(1.5 * (attempt + 1))
                     continue
                 else:
                     raise Exception(f"فشل الاتصال بـ Turso بعد {max_retries} محاولات: {last_err}")
@@ -402,6 +345,13 @@ class WrappedConnection:
     def close(self):
         try: self._session.close()
         except: pass
+
+
+def get_conn():
+    if 'db_conn' not in st.session_state or st.session_state.db_conn is None:
+        st.session_state.db_conn = WrappedConnection(TURSO_PIPELINE, TURSO_TOKEN)
+    return st.session_state.db_conn
+
 
 # ============================================================
 # Telegram
