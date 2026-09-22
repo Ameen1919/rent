@@ -297,19 +297,51 @@ class WrappedCursor:
 
 
 class WrappedConnection:
+    class WrappedConnection:
     def __init__(self, url, auth_token):
         self._url = url
         self._token = auth_token
+        self._session = None
+        self._create_session()
+
+    def _create_session(self):
+        """إنشاء session جديدة مع connection pooling"""
+        if self._session:
+            try: self._session.close()
+            except: pass
         self._session = requests.Session()
         self._session.headers.update({
-            "Authorization": f"Bearer {auth_token}",
-            "Content-Type": "application/json"
+            "Authorization": f"Bearer {self._token}",
+            "Content-Type": "application/json",
+            "Connection": "keep-alive",
         })
         adapter = requests.adapters.HTTPAdapter(
-            pool_connections=10, pool_maxsize=20, max_retries=2
+            pool_connections=10, pool_maxsize=20, max_retries=0
         )
         self._session.mount("https://", adapter)
         self._session.mount("http://", adapter)
+
+    def _safe_post(self, payload, timeout=120, max_retries=3):
+        """✅ POST مع retry تلقائي عند انقطاع الاتصال"""
+        last_err = None
+        for attempt in range(max_retries):
+            try:
+                r = self._session.post(self._url, json=payload, timeout=timeout)
+                return r
+            except (requests.exceptions.ConnectionError,
+                    requests.exceptions.ChunkedEncodingError,
+                    requests.exceptions.Timeout,
+                    requests.exceptions.RequestException,
+                    ConnectionResetError) as e:
+                last_err = e
+                if attempt < max_retries - 1:
+                    # جرب تعيد إنشاء الـ session (الاتصال ممكن يكون stale)
+                    try: self._create_session()
+                    except: pass
+                    time.sleep(1.5 * (attempt + 1))  # 1.5s, 3s
+                    continue
+                else:
+                    raise Exception(f"فشل الاتصال بـ Turso بعد {max_retries} محاولات: {last_err}")
 
     def cursor(self): return WrappedCursor(self)
 
@@ -324,17 +356,13 @@ class WrappedConnection:
                 except Exception: pass
 
     def execute_batch(self, queries):
-        """تنفيذ عدة SELECT في طلب HTTP واحد"""
         stmts = []
         for sql, params in queries:
             args = [_encode_arg(p) for p in (params or [])]
             stmts.append({"type": "execute", "stmt": {"sql": sql, "args": args, "want_rows": True}})
         stmts.append({"type": "close"})
         payload = {"requests": stmts}
-        try:
-            r = self._session.post(self._url, json=payload, timeout=120)
-        except Exception as e:
-            raise Exception(f"فشل الاتصال: {e}")
+        r = self._safe_post(payload, timeout=120)
         if not r.ok: raise Exception(f"Turso HTTP {r.status_code}")
         data = r.json()
         results = data.get("results", [])
@@ -349,19 +377,14 @@ class WrappedConnection:
         return output
 
     def execute_write_batch(self, queries):
-        """✅ تنفيذ عدة INSERT/UPDATE/DELETE في طلب HTTP واحد"""
-        if not queries:
-            return 0
+        if not queries: return 0
         stmts = []
         for sql, params in queries:
             args = [_encode_arg(p) for p in (params or [])]
             stmts.append({"type": "execute", "stmt": {"sql": sql, "args": args, "want_rows": False}})
         stmts.append({"type": "close"})
         payload = {"requests": stmts}
-        try:
-            r = self._session.post(self._url, json=payload, timeout=180)
-        except Exception as e:
-            raise Exception(f"فشل الاتصال: {e}")
+        r = self._safe_post(payload, timeout=180)
         if not r.ok:
             try: err_data = r.json()
             except: err_data = r.text[:300]
@@ -376,14 +399,9 @@ class WrappedConnection:
 
     def commit(self): pass
     def rollback(self): pass
-    def close(self): pass
-
-
-def get_conn():
-    if 'db_conn' not in st.session_state or st.session_state.db_conn is None:
-        st.session_state.db_conn = WrappedConnection(TURSO_PIPELINE, TURSO_TOKEN)
-    return st.session_state.db_conn
-
+    def close(self):
+        try: self._session.close()
+        except: pass
 
 # ============================================================
 # Telegram
