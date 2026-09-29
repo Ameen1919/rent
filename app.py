@@ -1348,8 +1348,8 @@ elif menu == "إدارة البيانات":
                 with pd.ExcelWriter(o, engine='xlsxwriter') as wr: df.to_excel(wr, index=False, sheet_name='المستأجرين')
                 o.seek(0)
                 st.download_button("تحميل قالب", data=o.getvalue(), file_name="قالب_المستأجرين.xlsx", mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", key="dl_tmpl_t")
-                 with ci2:
-                    uf = st.file_uploader("استيراد", type=["xlsx","xls"], key="imp_t")
+            with ci2:
+                uf = st.file_uploader("استيراد", type=["xlsx","xls"], key="imp_t")
                 if uf:
                     update_mode = st.checkbox("🔄 تحديث الموجود (بالاسم)", value=False, key="upd_t")
                     if st.button("تنفيذ", key="btn_imp_t"):
