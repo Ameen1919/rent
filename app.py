@@ -2101,7 +2101,7 @@ elif menu == "التقارير":
                 st.download_button("Excel", data=o.getvalue(), file_name=f"rev_{fd}_{td}.xlsx", key="dl_rev")
                 export_df_to_pdf(df_sel, "الإيرادات", f"rev_{fd}_{td}.pdf", columns_order=sel_c, landscape_mode=lc)
             else: st.info("لا إيرادات")
-                elif rt == "الضرائب":
+        elif rt == "الضرائب":
             # ✅ فلتر المنطقة أولاً
             all_tenants_df = load_tenants()
             regions_list_tax = ["الكل"] + sorted([r for r in all_tenants_df["المنطقة"].dropna().unique().tolist() if r])
